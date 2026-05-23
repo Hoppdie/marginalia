@@ -4,11 +4,12 @@ Run:
     .venv/Scripts/python tests/test_duckdb_tools_e2e.py
 
 Verifies:
-  query_table:
+  query_sql:
     - SELECT COUNT(*), filtered counts, projection — return correct rows
     - INSERT/UPDATE/DROP/etc. rejected
     - Multiple statements rejected
     - Unknown entry → error
+    - Column-name fuzzy match: "Name" auto-rewritten to "name"
   query_log:
     - substring filter, regex filter
     - level filter (INFO/ERROR + WARN ↔ WARNING alias)
@@ -134,49 +135,67 @@ async def main():
     await _create_schema()
     seeded = await _seed()
 
-    # ---- query_table ----------------------------------------------------
-    r = await _call("query_table", {
-        "entry_id": seeded["e_csv"],
-        "sql": "SELECT COUNT(*) AS n FROM t",
+    # ---- query_sql ------------------------------------------------------
+    r = await _call("query_sql", {
+        "entry_ids": [seeded["e_csv"]],
+        "sql": "SELECT COUNT(*) AS n FROM t1",
     })
     print("[1] count(*):", r)
+    assert r["ok"] is True, r
     assert r["columns"] == ["n"]
     assert r["rows"] == [[5]]
 
-    r = await _call("query_table", {
-        "entry_id": seeded["e_csv"],
-        "sql": "SELECT COUNT(*) FROM t WHERE role = 'engineer'",
+    r = await _call("query_sql", {
+        "entry_ids": [seeded["e_csv"]],
+        "sql": "SELECT COUNT(*) FROM t1 WHERE role = 'engineer'",
     })
+    assert r["ok"] is True
     assert r["rows"][0][0] == 3
     print("[2] engineer count:", r["rows"][0][0])
 
-    r = await _call("query_table", {
-        "entry_id": seeded["e_csv"],
-        "sql": "SELECT name, age FROM t WHERE age > 30 ORDER BY age DESC",
+    r = await _call("query_sql", {
+        "entry_ids": [seeded["e_csv"]],
+        "sql": "SELECT name, age FROM t1 WHERE age > 30 ORDER BY age DESC",
     })
+    assert r["ok"] is True
     assert len(r["rows"]) == 2
+    # Auto-infer treats `age` as integer, so comparisons + projection are typed.
     assert r["rows"][0] == ["carol", 40]
     print("[3] over-30:", r["rows"])
 
     # rejection paths
-    r = await _call("query_table", {
-        "entry_id": seeded["e_csv"], "sql": "DROP TABLE t",
+    r = await _call("query_sql", {
+        "entry_ids": [seeded["e_csv"]], "sql": "DROP TABLE t1",
     })
-    assert "only SELECT" in r["error"]
+    assert r["ok"] is False
+    assert "SELECT" in r["error"]
     print("[4] DROP rejected")
 
-    r = await _call("query_table", {
-        "entry_id": seeded["e_csv"],
-        "sql": "SELECT * FROM t; DELETE FROM t",
+    r = await _call("query_sql", {
+        "entry_ids": [seeded["e_csv"]],
+        "sql": "SELECT * FROM t1; DELETE FROM t1",
     })
-    assert "only SELECT" in r["error"] or "one statement" in r["error"]
+    assert r["ok"] is False
+    assert "SELECT" in r["error"] or "one statement" in r["error"]
     print("[5] multi-statement rejected")
 
-    r = await _call("query_table", {
-        "entry_id": "no-such-entry", "sql": "SELECT 1",
+    r = await _call("query_sql", {
+        "entry_ids": ["no-such-entry"], "sql": "SELECT 1",
     })
+    assert r["ok"] is False
     assert r["error"].startswith("entry not found")
     print("[6] unknown entry handled")
+
+    # ---- query_sql column fuzzy match (kb-lite-style) -------------------
+    r = await _call("query_sql", {
+        "entry_ids": [seeded["e_csv"]],
+        "sql": 'SELECT "Name" FROM t1 LIMIT 1',
+    })
+    # The seed CSV uses lowercase "name"; auto-rewrite kicks in.
+    assert r["ok"] is True, r
+    assert r["column_fixes"], "expected column_fixes to record the rewrite"
+    assert any("name" in f.lower() for f in r["column_fixes"])
+    print("[6b] column fuzzy match:", r["column_fixes"])
 
     # ---- query_log -----------------------------------------------------
     r = await _call("query_log", {

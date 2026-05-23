@@ -89,7 +89,7 @@ def _bootstrap() -> None:
     from marginalia.agent.tools import list_folders  # noqa: F401
     from marginalia.agent.tools import materialize_view  # noqa: F401
     from marginalia.agent.tools import query_log  # noqa: F401
-    from marginalia.agent.tools import query_table  # noqa: F401
+    from marginalia.agent.tools import query_sql  # noqa: F401
     from marginalia.agent.tools import read_catalog  # noqa: F401
     from marginalia.agent.tools import read_entries_metadata  # noqa: F401
     from marginalia.agent.tools import read_files  # noqa: F401
