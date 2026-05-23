@@ -186,7 +186,7 @@ async def main():
             async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
                 # ---- 1. text PDF: full ingest path -----------------------
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/papers/"},
                     files={"file": ("consensus.pdf", io.BytesIO(pdf_bytes),
                                     "application/pdf")},
@@ -236,7 +236,7 @@ async def main():
                 # ---- 4. Scanned-style PDF: needs OCR ---------------------
                 CALL_LOG.clear()
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/papers/"},
                     files={"file": ("scanned.pdf",
                                     io.BytesIO(scanned_bytes),

@@ -8,12 +8,13 @@ via the @command decorator. Help text is its docstring's first line.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, MutableMapping
 
 from marginalia.cli.client import CliHttpError, MarginaliaClient
-from marginalia.cli.render import Spinner, print_markdown
+from marginalia.cli.render import Spinner, print_markdown, render_markdown
 
 
 @dataclass
@@ -434,40 +435,180 @@ async def cmd_download(ctx: CliContext, args: str) -> None:
     )
 
 
+@command("tend")
+async def cmd_tend(ctx: CliContext, args: str) -> None:
+    """Run a maintenance pass — `tend [run_id]` to check status, no args to start."""
+    arg = args.strip()
+    if arg:
+        try:
+            status = await ctx.client.tend_status(arg)
+        except CliHttpError as e:
+            print(f"tend status failed: HTTP {e.status} {e.payload}")
+            return
+        _print_tend_status(status)
+        return
+
+    try:
+        out = await ctx.client.tend_start()
+    except CliHttpError as e:
+        print(f"tend failed: HTTP {e.status} {e.payload}")
+        return
+    run_id = out["tend_run_id"]
+    print(f"tend run started: {run_id}")
+    print(f"  {len(out['tasks'])} task(s) dispatched along the maintenance chain.")
+    skipped = [t for t in out["tasks"] if t.get("skipped")]
+    if skipped:
+        print(
+            f"  ({len(skipped)} reused an existing pending/running task — "
+            "no duplicate work)"
+        )
+    for t in out["tasks"]:
+        marker = "↺" if t.get("skipped") else "→"
+        print(f"  {marker} {t['kind']}")
+    print(
+        f"\nthe librarian will work in the background. "
+        f"check progress with `/tend {run_id}`."
+    )
+
+
+def _print_tend_status(status: dict) -> None:
+    total = status.get("total", 0)
+    settled = status.get("settled", 0)
+    print(
+        f"tend run {status['tend_run_id']}: "
+        f"{settled}/{total} settled"
+        + ("  ✓ all done" if status.get("all_settled") else "")
+    )
+    counts = status.get("state_counts") or {}
+    parts = [f"{k}={v}" for k, v in counts.items() if v]
+    if parts:
+        print("  " + "  ".join(parts))
+    for p in status.get("progress") or []:
+        kind = p.get("kind", "?")
+        st = p.get("status", "?")
+        ts = p.get("finished_at") or p.get("started_at") or ""
+        ts_short = ts[:19] if ts else ""
+        err = f"  err: {p.get('last_error')[:80]}" if p.get("last_error") else ""
+        print(f"  [{st:8}] {kind}  {ts_short}{err}")
+
+
 # ---- chat fallback --------------------------------------------------------
 
+_TOOL_LABELS = {
+    "list_catalogs": "浏览目录",
+    "read_catalog": "读取目录",
+    "resolve_tag": "解析标签",
+    "materialize_view": "实体化视图",
+    "search_metadata": "检索元数据",
+    "read_entries_metadata": "读取条目元数据",
+    "read_files": "阅读原文",
+    "search_journal": "翻阅日志",
+}
+
+
+def _format_tool_call(name: str, arguments: dict) -> str:
+    label = _TOOL_LABELS.get(name, name)
+    if not arguments:
+        return f"调用 {label}"
+    # one-line preview: "name(k=v, k=v)" truncated
+    parts = []
+    for k, v in arguments.items():
+        s = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
+        if len(s) > 24:
+            s = s[:21] + "..."
+        parts.append(f"{k}={s}")
+    inner = ", ".join(parts)
+    if len(inner) > 60:
+        inner = inner[:57] + "..."
+    return f"调用 {label}({inner})"
+
+
 async def chat(ctx: CliContext, message: str) -> None:
-    """Forward a non-slash message to the agent."""
+    """Forward a non-slash message to the agent and render the SSE stream."""
     if ctx.session_id is None:
         out = await ctx.client.create_session(initiating_user_message=message)
         ctx.session_id = out["session_id"]
         print(f"(opened session {ctx.session_id})")
 
+    sp = Spinner("调查员准备中...").start()
+    conversation_id: str | None = None
+    plan_text: str = ""
+    answer: str = ""
+    done_payload: dict = {}
+    error_msg: str | None = None
+    tool_count = 0
+
     try:
-        with Spinner("调查员正在工作...").start() as _sp:
-            result = await ctx.client.turn(ctx.session_id, message)
-            _sp.finish("回答已就绪")
+        async for ev in ctx.client.stream_chat(ctx.session_id, message):
+            if ev.event_type == "conversation":
+                conversation_id = ev.data
+            elif ev.event_type == "planning":
+                sp.update("制定调查计划...")
+            elif ev.event_type == "plan":
+                plan_text = ev.data
+                sp.finish("计划已就绪")
+                if plan_text.strip():
+                    print()
+                    print_markdown(plan_text)
+                    print()
+                sp = Spinner("调查员开始工作...").start()
+            elif ev.event_type == "thinking":
+                sp.update("调查员思考中...")
+            elif ev.event_type == "tool_call":
+                tool_count += 1
+                try:
+                    payload = json.loads(ev.data)
+                except (ValueError, TypeError):
+                    payload = {}
+                sp.update(_format_tool_call(
+                    payload.get("name", "?"),
+                    payload.get("arguments") or {},
+                ))
+            elif ev.event_type == "tool_result":
+                # keep label briefly; next thinking/tool_call event will replace it
+                try:
+                    payload = json.loads(ev.data)
+                except (ValueError, TypeError):
+                    payload = {}
+                if not payload.get("ok", True):
+                    sp.update(f"工具失败: {payload.get('error', '')[:40]}")
+            elif ev.event_type == "answer":
+                answer = ev.data
+            elif ev.event_type == "error":
+                error_msg = ev.data
+            elif ev.event_type == "done":
+                try:
+                    done_payload = json.loads(ev.data)
+                except (ValueError, TypeError):
+                    done_payload = {}
     except CliHttpError as e:
-        print(f"turn failed: HTTP {e.status} {e.payload}")
+        sp.fail(f"HTTP {e.status}")
+        print(f"chat failed: {e.payload}")
         return
 
+    if error_msg is not None:
+        sp.fail(error_msg)
+        return
+
+    sp.finish("回答已就绪")
     print()
-    print_markdown(result["agent_response"])
+    print_markdown(answer)
     print()
-    usage = result.get("usage") or {}
-    truncated = result.get("truncated")
+    truncated = bool(done_payload.get("truncated"))
     print(
-        f"  [tokens in={usage.get('input_tokens', 0)} "
-        f"out={usage.get('output_tokens', 0)} "
-        f"tools={usage.get('tool_calls', 0)} "
-        f"llm_calls={usage.get('llm_calls', 0)}]"
+        f"  [tokens in={done_payload.get('tokens_in', 0)} "
+        f"out={done_payload.get('tokens_out', 0)} "
+        f"tools={done_payload.get('tool_calls', tool_count)} "
+        f"llm_calls={done_payload.get('llm_calls', 0)} "
+        f"{done_payload.get('duration_ms', 0)}ms]"
         + ("  ⚠ truncated" if truncated else "")
     )
-    ctx.history.append({
-        "user": message,
-        "assistant": result["agent_response"],
-        "conversation_id": result["conversation_id"],
-    })
+    if conversation_id:
+        ctx.history.append({
+            "user": message,
+            "assistant": answer,
+            "conversation_id": conversation_id,
+        })
 
 
 # ---- dispatch -------------------------------------------------------------

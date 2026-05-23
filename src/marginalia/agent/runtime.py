@@ -1,24 +1,23 @@
 """Agent runtime — design.md §10.2 + §12.2.
 
-Plan-Execute loop. One `run_turn(session_id, user_message)` invocation:
+Plan-Execute loop, exposed as async generator yielding AgentEvent frames
+for SSE streaming. One `run_turn(session_id, user_message)` invocation:
 
-  1. Open one conversation row (turn_index = next).
-  2. Plan phase: ONE LLM call with `tools=[]`. Output is plan text only;
-     stored in conversations.llm_calls under phase='plan'.
-  3. Execute phase: up to MAX_EXECUTE_TURNS = 15 LLM calls with full tool
-     binding. Each turn:
-         - LLM call (records usage and llm_calls entry phase='execute')
-         - if model returned tool_calls: dispatch them, append tool_calls
-           records, feed results back as a `tool` message
+  1. Open one conversation row (turn_index = next). Yield "conversation".
+  2. Plan phase: yield "planning", do ONE LLM call with `tools=[]`,
+     yield "plan" with full plan_text. Stored in conversations.llm_calls
+     under phase='plan'.
+  3. Execute phase: up to MAX_EXECUTE_TURNS = 15 LLM calls. For each:
+         - yield "thinking", LLM call (records usage)
+         - if model returned tool_calls: yield "tool_call" per call,
+           dispatch, yield "tool_result", feed back as `tool` message
          - if model returned text + no tool_calls AND stop_reason='end_turn':
-           that's the final answer
-     Starting at turn 11 (>= EXECUTE_NUDGE_FROM), the budget tail message
-     pushes the agent to wrap up: "you have N rounds left, finalize soon".
-  4. Truncation: if MAX_EXECUTE_TURNS hit without natural termination,
-     synthesise a "I ran out of budget — partial answer follows" reply
-     using whatever the model last produced; record outcome='deferred'.
+           yield "answer" with final text
+     Starting at turn 11 (>= EXECUTE_NUDGE_FROM), append wrap-up tail.
+  4. Truncation: if MAX_EXECUTE_TURNS hit, yield "answer" with fallback
+     text and mark truncated=True.
   5. Finalize: write agent_response, ended_at; enqueue reflect_turn task
-     (priority 30); record task_outcome.
+     (priority 30); record task_outcome; yield "done" with usage JSON.
 
 Concurrency: this runtime assumes one in-flight turn per session. The API
 layer should serialise per-session turns or the conversation rows will
@@ -26,21 +25,21 @@ race.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import AsyncIterator
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.agent.stable_context import (
     build_stable_snapshot,
     render_system_prompt,
 )
 from marginalia.agent.tools import ToolContext, all_tool_defs, get_tool
-from marginalia.agent.types import AgentTurnError, TurnResult, TurnUsage
+from marginalia.agent.types import AgentEvent, AgentTurnError, TurnUsage
 from marginalia.db.models import Conversation
 from marginalia.db.session import session_scope
 from marginalia.llm import (
@@ -52,20 +51,18 @@ from marginalia.llm import (
     get_chat_client,
 )
 from marginalia.services import sessions as session_service
-from marginalia.services.task_outcomes import (
-    GLOBAL_OBJECT_KIND,
-    record_outcome,
-)
+from marginalia.services.task_outcomes import record_outcome
 from marginalia.tasks.enqueue import enqueue
 from marginalia.tasks.kinds import KIND_REFLECT_TURN
 
 log = logging.getLogger(__name__)
 
 MAX_EXECUTE_TURNS = 15
-EXECUTE_NUDGE_FROM = 11    # from this turn onwards, append wrap-up nudge
-MAX_TOOL_RESULT_LEN = 50_000  # tool result truncation guard
+EXECUTE_NUDGE_FROM = 11
+MAX_TOOL_RESULT_LEN = 50_000
 PLAN_MAX_TOKENS = 1024
 EXECUTE_MAX_TOKENS = 2048
+TOOL_RESULT_PREVIEW_LEN = 240
 
 
 def _utcnow() -> datetime:
@@ -76,14 +73,16 @@ async def run_turn(
     *,
     session_id: str,
     user_message: str,
-) -> TurnResult:
-    """Run one user turn. Returns TurnResult with the final answer."""
+) -> AsyncIterator[AgentEvent]:
+    """Run one user turn as an event stream.
+
+    Yields AgentEvent frames covering the full plan-execute lifecycle.
+    See AgentEvent docstring for event_type semantics.
+    """
     if not user_message.strip():
         raise AgentTurnError("user_message is empty")
 
-    # ---- 1. open conversation -------------------------------------------
     async with session_scope() as db:
-        # determine next turn_index
         last = (
             await db.execute(
                 select(Conversation.turn_index)
@@ -102,35 +101,43 @@ async def run_turn(
         await db.commit()
         conversation_id = conv.id
 
+    yield AgentEvent(event_type="conversation", data=conversation_id)
+
     system_prompt = render_system_prompt(snapshot)
     chat = get_chat_client("chat")
 
-    # ---- 2. plan phase --------------------------------------------------
+    yield AgentEvent(event_type="planning")
     plan_text = await _run_plan_phase(
         chat=chat,
         system_prompt=system_prompt,
         user_message=user_message,
         conversation_id=conversation_id,
     )
+    yield AgentEvent(event_type="plan", data=plan_text)
 
-    # ---- 3. execute phase ----------------------------------------------
-    final_answer, truncated = await _run_execute_phase(
+    final_answer = ""
+    truncated = False
+    async for ev in _run_execute_phase(
         chat=chat,
         system_prompt=system_prompt,
         plan_text=plan_text,
         user_message=user_message,
         conversation_id=conversation_id,
         session_id=session_id,
-    )
+    ):
+        if ev.event_type == "answer":
+            final_answer = ev.data
+        elif ev.event_type == "_truncated":
+            truncated = True
+            continue
+        yield ev
 
-    # ---- 4. finalize ---------------------------------------------------
     async with session_scope() as db:
         await session_service.finalize_conversation(
             db,
             conversation_id=conversation_id,
             agent_response=final_answer,
         )
-        # enqueue reflect_turn (priority 30)
         await enqueue(
             db,
             kind=KIND_REFLECT_TURN,
@@ -149,7 +156,6 @@ async def run_turn(
                 "truncated": truncated,
             },
         )
-        # accumulate usage from the freshly-flushed conversation
         conv = await db.get(Conversation, conversation_id)
         usage = TurnUsage(
             input_tokens=conv.total_input_tokens or 0,
@@ -161,13 +167,18 @@ async def run_turn(
         )
         await db.commit()
 
-    return TurnResult(
-        session_id=session_id,
-        conversation_id=conversation_id,
-        agent_response=final_answer,
-        plan_text=plan_text,
-        usage=usage,
-        truncated=truncated,
+    yield AgentEvent(
+        event_type="done",
+        data=json.dumps({
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+            "tokens_in": usage.input_tokens,
+            "tokens_out": usage.output_tokens,
+            "tool_calls": usage.tool_calls,
+            "llm_calls": usage.llm_calls,
+            "duration_ms": usage.duration_ms,
+            "truncated": truncated,
+        }),
     )
 
 
@@ -218,13 +229,16 @@ async def _run_execute_phase(
     user_message: str,
     conversation_id: str,
     session_id: str,
-) -> tuple[str, bool]:
-    """Execute loop. Returns (final_answer_text, truncated)."""
+) -> AsyncIterator[AgentEvent]:
+    """Execute loop as event stream.
+
+    Yields AgentEvent frames: thinking / tool_call / tool_result / answer /
+    `_truncated` (internal sentinel consumed by run_turn — see _truncated
+    handler in the parent generator).
+    """
     tool_defs = all_tool_defs()
     ctx = ToolContext(session_id=session_id, conversation_id=conversation_id)
 
-    # Maintain the turn-by-turn message list. We seed with the original user
-    # question + the plan as an assistant turn so the model can reference it.
     messages: list[ChatMessage] = [
         ChatMessage(role="user", content=user_message),
         ChatMessage(role="assistant", content=(
@@ -238,6 +252,8 @@ async def _run_execute_phase(
         loop_messages = messages + [
             ChatMessage(role="user", content=budget_tail)
         ] if budget_tail else messages
+
+        yield AgentEvent(event_type="thinking")
 
         started = time.monotonic()
         resp = await chat.complete(ChatRequest(
@@ -276,22 +292,34 @@ async def _run_execute_phase(
                 ))
             messages.append(ChatMessage(role="assistant", content=assistant_blocks))
 
-            tool_result_blocks = await _dispatch_tool_calls(
+            tool_result_blocks: list[ToolResultBlock] = []
+            async for ev_or_block in _dispatch_tool_calls(
                 tool_calls=resp.tool_calls,
                 ctx=ctx,
                 conversation_id=conversation_id,
-            )
+            ):
+                if isinstance(ev_or_block, AgentEvent):
+                    yield ev_or_block
+                else:
+                    tool_result_blocks.append(ev_or_block)
             messages.append(ChatMessage(role="tool", content=tool_result_blocks))
             last_text = resp.text or last_text
             continue
 
-        # No tool calls: this is the final assistant message
         last_text = resp.text or last_text
         if resp.stop_reason in ("end_turn", "stop_sequence"):
-            return (resp.text or last_text or "(无回答)", False)
+            yield AgentEvent(
+                event_type="answer",
+                data=resp.text or last_text or "(无回答)",
+            )
+            return
         if resp.stop_reason == "max_tokens":
             log.warning("execute turn %d hit max_tokens; treating as final", turn)
-            return (resp.text or last_text or "(无回答)", False)
+            yield AgentEvent(
+                event_type="answer",
+                data=resp.text or last_text or "(无回答)",
+            )
+            return
 
     log.warning("conversation %s hit MAX_EXECUTE_TURNS=%d", conversation_id,
                 MAX_EXECUTE_TURNS)
@@ -299,7 +327,8 @@ async def _run_execute_phase(
         last_text
         or "对不起——本轮调查超过了预算上限，没能给出完整回答。请把问题分小或换个角度再试。"
     )
-    return (fallback, True)
+    yield AgentEvent(event_type="_truncated")
+    yield AgentEvent(event_type="answer", data=fallback)
 
 
 def _budget_tail(*, turn: int) -> str | None:
@@ -324,10 +353,21 @@ async def _dispatch_tool_calls(
     tool_calls,
     ctx: ToolContext,
     conversation_id: str,
-) -> list[ToolResultBlock]:
-    """Run each tool inside its own session_scope; record on conversation."""
-    out: list[ToolResultBlock] = []
+):
+    """Run each tool inside its own session_scope; record on conversation.
+
+    Async generator yielding interleaved AgentEvent (`tool_call`,
+    `tool_result`) and ToolResultBlock (the model-feedback payload). The
+    caller filters by isinstance.
+    """
     for tc in tool_calls:
+        yield AgentEvent(
+            event_type="tool_call",
+            data=json.dumps({
+                "name": tc.name,
+                "arguments": tc.arguments,
+            }, ensure_ascii=False),
+        )
         reg = get_tool(tc.name)
         started = time.monotonic()
         if reg is None:
@@ -344,18 +384,24 @@ async def _dispatch_tool_calls(
                     duration_ms=duration_ms,
                 )
                 await db.commit()
-            out.append(ToolResultBlock(
+            yield AgentEvent(
+                event_type="tool_result",
+                data=json.dumps({
+                    "name": tc.name, "ok": False, "error": err,
+                }, ensure_ascii=False),
+            )
+            yield ToolResultBlock(
                 tool_call_id=tc.id,
                 content=f"ERROR: {err}",
                 is_error=True,
-            ))
+            )
             continue
 
         try:
             async with session_scope() as db:
                 result = await reg.handler(db, ctx, tc.arguments)
                 await db.commit()
-        except Exception as exc:  # noqa: BLE001 - tool errors are reported, not raised
+        except Exception as exc:  # noqa: BLE001
             log.exception("tool %s failed", tc.name)
             duration_ms = int((time.monotonic() - started) * 1000)
             async with session_scope() as db:
@@ -369,16 +415,20 @@ async def _dispatch_tool_calls(
                     duration_ms=duration_ms,
                 )
                 await db.commit()
-            out.append(ToolResultBlock(
+            yield AgentEvent(
+                event_type="tool_result",
+                data=json.dumps({
+                    "name": tc.name, "ok": False, "error": repr(exc),
+                }, ensure_ascii=False),
+            )
+            yield ToolResultBlock(
                 tool_call_id=tc.id,
                 content=f"ERROR: {exc!r}",
                 is_error=True,
-            ))
+            )
             continue
 
         duration_ms = int((time.monotonic() - started) * 1000)
-        # serialise the result for the model + storage
-        import json
         result_text = json.dumps(result, ensure_ascii=False)
         if len(result_text) > MAX_TOOL_RESULT_LEN:
             result_text = result_text[:MAX_TOOL_RESULT_LEN] + "...(truncated)"
@@ -392,8 +442,16 @@ async def _dispatch_tool_calls(
                 duration_ms=duration_ms,
             )
             await db.commit()
-        out.append(ToolResultBlock(
+        preview = result_text[:TOOL_RESULT_PREVIEW_LEN]
+        if len(result_text) > TOOL_RESULT_PREVIEW_LEN:
+            preview += "..."
+        yield AgentEvent(
+            event_type="tool_result",
+            data=json.dumps({
+                "name": tc.name, "ok": True, "preview": preview,
+            }, ensure_ascii=False),
+        )
+        yield ToolResultBlock(
             tool_call_id=tc.id,
             content=result_text,
-        ))
-    return out
+        )

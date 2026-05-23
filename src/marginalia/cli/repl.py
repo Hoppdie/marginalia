@@ -8,14 +8,26 @@ Backed by prompt_toolkit when stdin is a TTY:
 
 When stdin is not a TTY (pipes / tests), falls back to the original
 `sys.stdin.readline` loop so e2e tests and shell scripts keep working.
+
+## Embedded vs remote mode
+
+Default is **embedded**: the FastAPI app is mounted in-process and the
+TaskRunner is started inside the CLI's own asyncio loop. No HTTP socket
+is opened — `httpx.ASGITransport` invokes the ASGI app directly.
+
+When `--server <URL>` is passed (or `MARGINALIA_SERVER` env is set), the
+CLI runs in **remote** mode: a normal HTTP client targeting the URL.
+Use this when running the server on a different machine or when sharing
+one knowledge base across multiple CLIs.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import httpx
 
@@ -29,12 +41,18 @@ from marginalia.cli.commands import (
 
 PROMPT = "marginalia> "
 HISTORY_PATH = Path.home() / ".marginalia_history"
+EMBEDDED_BASE_URL = "http://embedded"
+EMBEDDED_MARKER = "embedded"
+ENV_SERVER = "MARGINALIA_SERVER"
 
 
-def _print_banner(ctx: CliContext) -> None:
+def _print_banner(ctx: CliContext, mode: str) -> None:
     print()
     print("Marginalia CLI")
-    print(f"  server: {ctx.client.base_url}")
+    if mode == EMBEDDED_MARKER:
+        print(f"  mode: embedded (server runs in this process)")
+    else:
+        print(f"  server: {ctx.client.base_url}")
     print(f"  cwd:    {ctx.cwd_remote}")
     print(f"  on_conflict: {ctx.on_conflict}")
     print()
@@ -123,18 +141,104 @@ async def _read_via_stdin() -> Optional[str]:
     return line.rstrip("\n")
 
 
+# ---- transport selection -------------------------------------------------
+
+@contextlib.asynccontextmanager
+async def _embedded_lifespan() -> AsyncIterator[httpx.AsyncBaseTransport]:
+    """Yield an in-process ASGI transport with FastAPI lifespan running.
+
+    LifespanManager fires startup (TaskRunner.start) on enter and
+    shutdown (TaskRunner.stop, dispose_engine) on exit, the same way
+    uvicorn would. Until shutdown completes, in-flight ingest tasks keep
+    progressing.
+    """
+    from asgi_lifespan import LifespanManager
+
+    from marginalia.main import app
+
+    async with LifespanManager(app) as manager:
+        yield httpx.ASGITransport(app=manager.app)
+
+
+async def _flush_pending_tasks_prompt(
+    client: MarginaliaClient, *, mode: str
+) -> None:
+    """Embedded mode only: if tasks are still on the queue, ask the user
+    whether to wait for them or quit now.
+
+    Wait path = poll running-count every 1s until it hits zero.
+    Quit-now path = return; lifespan shutdown will tear down TaskRunner;
+    `recover_stuck_tasks` resumes them on next launch.
+    """
+    if mode != EMBEDDED_MARKER:
+        return
+    try:
+        counts = await client.running_task_count()
+    except Exception:
+        return
+    total = counts.get("running", 0) + counts.get("pending", 0)
+    if total <= 0:
+        return
+
+    print(
+        f"\n{total} background task(s) still queued "
+        f"({counts.get('running', 0)} running, {counts.get('pending', 0)} pending)."
+    )
+    print("[w]ait for them, or [q]uit now (next launch will resume)? ", end="")
+    sys.stdout.flush()
+    try:
+        choice = (await _read_via_stdin()) or ""
+    except (EOFError, KeyboardInterrupt):
+        choice = ""
+    if choice.strip().lower() not in ("w", "wait", ""):
+        return  # quit now
+
+    print("waiting for tasks to finish (Ctrl-C to abandon)...")
+    try:
+        last = total
+        while True:
+            await asyncio.sleep(1.0)
+            counts = await client.running_task_count()
+            now = counts.get("running", 0) + counts.get("pending", 0)
+            if now <= 0:
+                print("all tasks done.")
+                return
+            if now != last:
+                print(
+                    f"  {now} task(s) remaining "
+                    f"({counts.get('running', 0)} running, "
+                    f"{counts.get('pending', 0)} pending)"
+                )
+                last = now
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("(abandoning wait — tasks will resume on next launch)")
+
+
 # ---- main loop ------------------------------------------------------------
 
 async def run_repl(
     *,
     base_url: str = "http://127.0.0.1:8000",
     transport: httpx.AsyncBaseTransport | None = None,
+    mode: str = "remote",
 ) -> int:
+    """Run the REPL.
+
+    Parameters
+    ----------
+    base_url
+        For remote mode: server URL. For embedded mode: a sentinel
+        ``http://embedded`` is used (httpx requires a base URL even with
+        a custom transport).
+    transport
+        Optional httpx transport. Set when embedded mode prepares an
+        ASGITransport in advance, or when tests inject a fake.
+    mode
+        ``"embedded"`` or ``"remote"`` — affects only the banner.
+    """
     client = MarginaliaClient(base_url=base_url, transport=transport)
     ctx = CliContext(client=client)
 
-    # Decide reader strategy: if stdin is a TTY, use prompt_toolkit; else
-    # fall back to plain readline so pipes / tests work.
     use_pt = sys.stdin.isatty() and sys.stdout.isatty()
     pt_session = _build_pt_session() if use_pt else None
 
@@ -142,10 +246,11 @@ async def run_repl(
         try:
             await client.health()
         except Exception as exc:  # noqa: BLE001
-            print(f"cannot reach server at {base_url}: {exc}")
+            target = "embedded server" if mode == EMBEDDED_MARKER else base_url
+            print(f"cannot reach {target}: {exc}")
             return 2
 
-        _print_banner(ctx)
+        _print_banner(ctx, mode)
 
         while True:
             if pt_session is not None:
@@ -178,9 +283,19 @@ async def run_repl(
                 await client.close_session(ctx.session_id)
             except Exception:
                 pass
+        await _flush_pending_tasks_prompt(client, mode=mode)
         return 0
     finally:
         await client.aclose()
+
+
+async def _run_embedded() -> int:
+    async with _embedded_lifespan() as transport:
+        return await run_repl(
+            base_url=EMBEDDED_BASE_URL,
+            transport=transport,
+            mode=EMBEDDED_MARKER,
+        )
 
 
 def main() -> int:
@@ -195,17 +310,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="marginalia",
         description=(
-            "Marginalia CLI. Run with no args for the REPL, "
+            "Marginalia CLI. Run with no args for the embedded REPL, "
+            "`--server URL` (or MARGINALIA_SERVER env) for remote mode, "
             "or `marginalia init` to bootstrap a project."
         ),
     )
     parser.add_argument(
-        "--server", default="http://127.0.0.1:8000",
-        help="Marginalia server base URL (default %(default)s)",
+        "--server", default=None,
+        help="Server URL for remote mode. If omitted, runs in-process "
+             "(reads MARGINALIA_SERVER env as fallback).",
     )
     args = parser.parse_args(argv)
+    server_url = args.server or os.environ.get(ENV_SERVER) or None
+
     try:
-        return asyncio.run(run_repl(base_url=args.server))
+        if server_url:
+            return asyncio.run(run_repl(base_url=server_url, mode="remote"))
+        return asyncio.run(_run_embedded())
     except KeyboardInterrupt:
         return 130
 

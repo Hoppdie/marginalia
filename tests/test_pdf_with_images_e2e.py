@@ -258,7 +258,7 @@ async def main():
         try:
             async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/papers/"},
                     files={"file": ("paper.pdf", io.BytesIO(pdf_bytes),
                                     "application/pdf")},

@@ -27,5 +27,27 @@ class TurnResult:
     truncated: bool = False  # True when MAX_EXECUTE_TURNS hit
 
 
+@dataclass(slots=True)
+class AgentEvent:
+    """One frame in the SSE stream produced by `chat()`.
+
+    event_type values:
+      - "session"      : data = session_id (sent on first event when session was implicitly created)
+      - "conversation" : data = conversation_id (sent right after conversation row opens)
+      - "planning"     : transient marker; planner LLM call started, no data
+      - "plan"         : data = plan_text (full plan after planner returns)
+      - "thinking"     : transient marker; execute LLM call started, no data
+      - "tool_call"    : data = JSON{name, arguments, display}
+      - "tool_result"  : data = JSON{name, ok, error?, preview?}
+      - "answer"       : data = final answer text (single chunk; no token-level streaming yet)
+      - "error"        : data = error message
+      - "done"         : data = JSON usage dict (tokens, tool_calls, llm_calls, duration_ms, truncated)
+    """
+
+    event_type: str
+    data: str = ""
+
+
 class AgentTurnError(Exception):
     """Raised when a turn cannot be completed (e.g. exceeded loop cap)."""
+

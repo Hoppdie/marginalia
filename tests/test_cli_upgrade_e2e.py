@@ -360,6 +360,108 @@ def test_repl_fallback_when_not_tty() -> None:
     print("[A3] run_repl falls back to readline when stdin isn't a TTY")
 
 
+def test_embedded_mode_starts_lifespan_and_exits_cleanly() -> None:
+    """`marginalia` (no --server) must mount the FastAPI app in-process.
+
+    Verifies:
+      1. _embedded_lifespan() yields an httpx.ASGITransport
+      2. Lifespan startup fires (worker_enabled=true → TaskRunner starts)
+      3. Health probe through the embedded transport returns 200
+      4. Lifespan shutdown completes without raising
+    """
+    import asyncio
+    import httpx
+
+    sandbox = _TEST_ROOT / "embedded_mode"
+    sandbox.mkdir(parents=True)
+    os.environ["SQLITE_PATH"] = str(sandbox / "marginalia.db")
+    os.environ["LOCAL_STORAGE_ROOT"] = str(sandbox / "objects")
+    os.environ["WORKER_ENABLED"] = "true"
+    os.environ["LLM_DEFAULT_API_KEY"] = "sk-fake"
+    os.environ["LLM_DEFAULT_MODEL"] = "fake-model"
+
+    from marginalia.config import get_settings
+    get_settings.cache_clear()  # type: ignore[attr-defined]
+
+    from marginalia.db.engine import get_engine
+    from marginalia.db.models import Base
+    from marginalia.cli import repl as repl_mod
+
+    async def _setup_schema() -> None:
+        engine = get_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_setup_schema())
+
+    async def _go() -> dict:
+        async with repl_mod._embedded_lifespan() as transport:
+            assert isinstance(transport, httpx.ASGITransport)
+            async with httpx.AsyncClient(
+                base_url=repl_mod.EMBEDDED_BASE_URL, transport=transport,
+            ) as c:
+                r = await c.get("/health")
+                assert r.status_code == 200, r.text
+                health_body = r.json()
+                # Exercise a /v1 route too — confirms prefix is wired.
+                r2 = await c.get("/v1/folders")
+                assert r2.status_code == 200, r2.text
+                return {"health": health_body, "folders": r2.json()}
+
+    out = asyncio.run(_go())
+    assert out["health"] == {"status": "ok"}
+    assert isinstance(out["folders"], dict)
+    print("[A4] embedded mode lifespan + ASGI transport round-trip OK")
+
+
+def test_embedded_main_picks_remote_when_server_arg_given() -> None:
+    """`marginalia --server URL` must skip embedded mode (just URL routing).
+
+    We don't actually run the loop — just verify the dispatch logic by
+    pulling apart main()'s argv handling: with --server, asyncio.run
+    receives run_repl(remote); without, it receives _run_embedded().
+    """
+    import sys as _sys
+    import asyncio
+
+    from marginalia.cli import repl as repl_mod
+
+    captured = {"target": None}
+
+    real_run = asyncio.run
+
+    def _capture(coro):
+        captured["target"] = coro.__qualname__
+        coro.close()
+        return 0
+
+    real_argv = _sys.argv[:]
+    real_env_server = os.environ.pop("MARGINALIA_SERVER", None)
+    try:
+        asyncio.run = _capture  # type: ignore[assignment]
+
+        _sys.argv = ["marginalia"]
+        repl_mod.main()
+        assert captured["target"] == "_run_embedded", captured
+
+        _sys.argv = ["marginalia", "--server", "http://example:9999"]
+        repl_mod.main()
+        assert captured["target"] == "run_repl", captured
+
+        os.environ["MARGINALIA_SERVER"] = "http://from-env:8000"
+        _sys.argv = ["marginalia"]
+        repl_mod.main()
+        assert captured["target"] == "run_repl", captured
+    finally:
+        asyncio.run = real_run  # type: ignore[assignment]
+        _sys.argv = real_argv
+        os.environ.pop("MARGINALIA_SERVER", None)
+        if real_env_server is not None:
+            os.environ["MARGINALIA_SERVER"] = real_env_server
+
+    print("[A5] main() picks embedded vs remote correctly")
+
+
 # ---- main runner -------------------------------------------------------------
 
 def main() -> None:
@@ -375,6 +477,8 @@ def main() -> None:
     test_repl_module_imports_and_main_dispatches_init()
     test_repl_pt_session_buildable()
     test_repl_fallback_when_not_tty()
+    test_embedded_mode_starts_lifespan_and_exits_cleanly()
+    test_embedded_main_picks_remote_when_server_arg_given()
     print("\nALL CLI UPGRADE E2E CHECKS PASSED")
 
 

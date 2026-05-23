@@ -61,7 +61,7 @@ async def main() -> None:
             # 2. New upload — auto-creates /research/llm folders
             content_a = b"Marginalia E2E content A\n" * 50
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/research/llm/paper.pdf"},
                 files={"file": ("paper.pdf", io.BytesIO(content_a), "application/pdf")},
             )
@@ -74,7 +74,7 @@ async def main() -> None:
 
             # 3. Sha256 dedup — same bytes, different remote path
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/research/llm/copy_of_paper.pdf"},
                 files={"file": ("copy.pdf", io.BytesIO(content_a), "application/pdf")},
             )
@@ -87,7 +87,7 @@ async def main() -> None:
 
             # 4. Name conflict — default policy (rename) → " (1)"
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/research/llm/paper.pdf"},
                 files={"file": ("paper.pdf", io.BytesIO(content_a), "application/pdf")},
             )
@@ -100,7 +100,7 @@ async def main() -> None:
 
             # 5. Name conflict — on_conflict=error → 409
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/research/llm/paper.pdf", "on_conflict": "error"},
                 files={"file": ("paper.pdf", io.BytesIO(content_a), "application/pdf")},
             )
@@ -112,7 +112,7 @@ async def main() -> None:
 
             # 6. Name conflict — on_conflict=skip → return existing entry
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/research/llm/paper.pdf", "on_conflict": "skip"},
                 files={"file": ("paper.pdf", io.BytesIO(content_a), "application/pdf")},
             )
@@ -125,7 +125,7 @@ async def main() -> None:
             # 7. Different content → new file row, new ingest task
             content_b = b"Different content B\n" * 100
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/datasets/raw.csv"},
                 files={"file": ("raw.csv", io.BytesIO(content_b), "text/csv")},
             )
@@ -138,7 +138,7 @@ async def main() -> None:
             # 7a. Ambiguous remote_path (no extension, no trailing slash)
             # → 400 with ambiguous_remote_path detail
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/repos/marginalia"},
                 files={"file": ("LICENSE", io.BytesIO(b"MIT"), "text/plain")},
             )
@@ -148,7 +148,7 @@ async def main() -> None:
 
             # 7b. Same path with trailing '/' → folder, file lands as LICENSE
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/repos/marginalia/"},
                 files={"file": ("LICENSE", io.BytesIO(b"MIT"), "text/plain")},
             )
@@ -160,7 +160,7 @@ async def main() -> None:
             # 7c. Same path WITHOUT trailing '/' but display_name override
             # → folder=/repos/marginalia, display_name=LICENSE
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/repos/marginalia",
                         "display_name": "COPYRIGHT"},
                 files={"file": ("LICENSE", io.BytesIO(b"MIT"), "text/plain")},
@@ -171,17 +171,17 @@ async def main() -> None:
             print("[6c] explicit display_name override:", up6c["display_name"])
 
             # 8. Folder browsing
-            r = await c.get("/folders")
+            r = await c.get("/v1/folders")
             roots = r.json()["folders"]
             print("[7] roots:", [f["name"] for f in roots])
             assert {f["name"] for f in roots} == {"research", "datasets", "repos"}
 
             research_id = next(f["id"] for f in roots if f["name"] == "research")
-            r = await c.get(f"/folders/{research_id}")
+            r = await c.get(f"/v1/folders/{research_id}")
             research = r.json()
             assert research["children"][0]["name"] == "llm"
             llm_id = research["children"][0]["id"]
-            r = await c.get(f"/folders/{llm_id}")
+            r = await c.get(f"/v1/folders/{llm_id}")
             llm = r.json()
             print("[8] /research/llm contents:",
                   [(e["display_name"], e["lifecycle"]) for e in llm["entries"]])

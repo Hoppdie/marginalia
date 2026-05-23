@@ -6,10 +6,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 import marginalia.tasks.handlers  # noqa: F401  (registers task handlers)
-from marginalia.api.routes_agent import router as agent_router
+from marginalia.api.routes_agent import router as sessions_router
+from marginalia.api.routes_chat import router as chat_router
 from marginalia.api.routes_exports import router as exports_router
 from marginalia.api.routes_file_entries import router as file_entries_router
 from marginalia.api.routes_folders import router as folders_router
+from marginalia.api.routes_tasks import router as tasks_router
+from marginalia.api.routes_tend import router as tend_router
 from marginalia.api.routes_upload import router as upload_router
 from marginalia.api.routes_user_files import router as user_files_router
 from marginalia.config import get_settings
@@ -36,12 +39,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Marginalia", lifespan=lifespan)
-app.include_router(folders_router)
-app.include_router(file_entries_router)
-app.include_router(upload_router)
-app.include_router(user_files_router)
-app.include_router(agent_router)
-app.include_router(exports_router)
+
+V1_PREFIX = "/v1"
+app.include_router(folders_router, prefix=V1_PREFIX)
+app.include_router(file_entries_router, prefix=V1_PREFIX)
+app.include_router(upload_router, prefix=V1_PREFIX)
+app.include_router(user_files_router, prefix=V1_PREFIX)
+app.include_router(sessions_router, prefix=V1_PREFIX)
+app.include_router(chat_router, prefix=V1_PREFIX)
+app.include_router(exports_router, prefix=V1_PREFIX)
+app.include_router(tasks_router, prefix=V1_PREFIX)
+app.include_router(tend_router, prefix=V1_PREFIX)
 
 
 @app.get("/health", tags=["meta"])

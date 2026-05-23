@@ -198,7 +198,7 @@ async def main():
                                          base_url="http://t") as c:
                 # 2. Upload + ingest a git repo zip
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/repos/"},
                     files={"file": ("acme.zip", io.BytesIO(repo_zip),
                                     "application/zip")},
@@ -250,7 +250,7 @@ async def main():
             async with httpx.AsyncClient(transport=transport2,
                                          base_url="http://t") as c:
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/archives/"},
                     files={"file": ("archive.zip", non_git_zip,
                                     "application/zip")},

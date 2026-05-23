@@ -148,7 +148,7 @@ async def main() -> None:
                                          base_url="http://t") as c:
                 # --- 2. Upload via API → ingest task enqueued ---------
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/research/notes/"},
                     files={"file": ("note.md",
                                     io.BytesIO(b"# Title\n\nA short note for the worker test.\n"),
@@ -212,13 +212,13 @@ async def main() -> None:
                 for i in range(3):
                     body = f"# Doc {i}\n\nbody-{i}\n".encode("utf-8")
                     r = await c.post(
-                        "/upload",
+                        "/v1/upload",
                         params={"remote_path": "/research/batch/"},
                         params_=None,
                         files={"file": (f"d{i}.md", io.BytesIO(body),
                                         "text/markdown")},
                     ) if False else await c.post(
-                        "/upload",
+                        "/v1/upload",
                         params={"remote_path": "/research/batch/",
                                 "display_name": f"d{i}.md"},
                         files={"file": (f"d{i}.md", io.BytesIO(body),

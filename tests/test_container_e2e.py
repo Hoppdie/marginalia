@@ -190,7 +190,7 @@ async def main():
             async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
                 # ---- 1. ingest the repo zip ---------------------------
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/repos/"},
                     files={"file": ("myapp.zip", io.BytesIO(repo_zip),
                                     "application/zip")},
@@ -238,7 +238,7 @@ async def main():
                 # ---- 4. traversal zip rejected --------------------------
                 CALL_LOG.clear()
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/repos/", "display_name": "bad.zip"},
                     files={"file": ("bad.zip", io.BytesIO(traversal_zip),
                                     "application/zip")},
@@ -307,7 +307,7 @@ async def main():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport2, base_url="http://t") as c:
             r = await c.post(
-                "/upload",
+                "/v1/upload",
                 params={"remote_path": "/notes/"},
                 files={"file": ("note.md", io.BytesIO(b"# Hello\n\nA note.\n"),
                                 "text/markdown")},

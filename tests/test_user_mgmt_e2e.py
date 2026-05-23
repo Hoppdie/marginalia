@@ -142,14 +142,14 @@ async def main():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             # ---- 1. Folder rename --------------------------------------
-            r = await c.patch(f"/folders/{seeded['a']}",
+            r = await c.patch(f"/v1/folders/{seeded['a']}",
                               json={"name": "Alpha"})
             assert r.status_code == 200, r.text
             assert r.json()["name"] == "Alpha"
             print("[1] folder rename A→Alpha:", r.json()["name"])
 
             # ---- 2. Folder move B (under A) → root --------------------
-            r = await c.patch(f"/folders/{seeded['b']}",
+            r = await c.patch(f"/v1/folders/{seeded['b']}",
                               json={"update_parent": True, "parent_id": None})
             assert r.status_code == 200, r.text
             print("[2] folder move B→root:", r.json()["parent_id"])
@@ -163,14 +163,14 @@ async def main():
             # under B, B is now at root. Path A->B->D moved to root->B->D.
             # Alpha (was A) is now empty. Let's reset to a clean cycle test:
             # move B under D (D is a child of B) → cycle.
-            r = await c.patch(f"/folders/{seeded['b']}",
+            r = await c.patch(f"/v1/folders/{seeded['b']}",
                               json={"update_parent": True, "parent_id": seeded["d"]})
             assert r.status_code == 400, r.text
             print("[3] cycle move B→D rejected:", r.status_code)
 
             # ---- 4. Sibling name conflict -----------------------------
             # Try renaming Alpha to "C" (C is a sibling at root)
-            r = await c.patch(f"/folders/{seeded['a']}",
+            r = await c.patch(f"/v1/folders/{seeded['a']}",
                               json={"name": "C"})
             assert r.status_code == 409, r.text
             print("[4] folder rename conflict:", r.json()["detail"]["error"])
@@ -178,14 +178,14 @@ async def main():
             # ---- 5. Folder soft-delete cascades -----------------------
             # delete folder B → entries inside B and inside descendant D
             # should all get deleted_at + purge_after.
-            r = await c.delete(f"/folders/{seeded['b']}",
+            r = await c.delete(f"/v1/folders/{seeded['b']}",
                                params={"purge_after_seconds": 60})
             assert r.status_code == 200, r.text
             print("[5] folder soft-delete OK:", r.json()["deleted_at"][:19])
 
             # ---- 6. Entry rename --------------------------------------
             # e3 was paper.txt in C. Rename it.
-            r = await c.patch(f"/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
                               json={"display_name": "paper-v2.txt"})
             assert r.status_code == 200, r.text
             print("[6] entry rename:", r.json()["display_name"])
@@ -203,7 +203,7 @@ async def main():
                 )
                 s.add(e_clash); await s.commit()
 
-            r = await c.patch(f"/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
                               json={"display_name": "conflict.txt",
                                     "on_conflict": "error"})
             assert r.status_code == 409, r.text
@@ -211,7 +211,7 @@ async def main():
                   r.json()["detail"]["error"])
 
             # auto-rename works:
-            r = await c.patch(f"/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
                               json={"display_name": "conflict.txt",
                                     "on_conflict": "rename"})
             assert r.status_code == 200, r.text
@@ -224,23 +224,23 @@ async def main():
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             # e3 is alive in folder C (not affected by B cascade). Try
             # legal lifecycle changes:
-            r = await c.patch(f"/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
                               json={"lifecycle": "manual_active"})
             assert r.status_code == 200, r.text
             assert r.json()["lifecycle"] == "manual_active"
-            r = await c.patch(f"/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
                               json={"lifecycle": "manual_archived"})
             assert r.status_code == 200, r.text
             print("[8] lifecycle manual_archived OK")
 
             # Reject: user cannot directly set 'demoted' or 'archived'
-            r = await c.patch(f"/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
                               json={"lifecycle": "demoted"})
             assert r.status_code == 400, r.text
             print("[8] reject demoted:", r.status_code)
 
             # ---- 9. Soft-delete entry --------------------------------
-            r = await c.delete(f"/file-entries/{seeded['e3']}",
+            r = await c.delete(f"/v1/file-entries/{seeded['e3']}",
                                params={"purge_after_seconds": 30})
             assert r.status_code == 200, r.text
             assert r.json()["deleted_at"] is not None

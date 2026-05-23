@@ -4,14 +4,14 @@ Run:
     .venv/Scripts/python tests/test_agent_e2e.py
 
 Verifies one full plan-execute turn:
-  1. POST /sessions creates a session row
-  2. POST /sessions/{id}/turn runs:
+  1. POST /v1/sessions creates a session row
+  2. POST /v1/chat/{session_id} runs as SSE event stream:
      - plan phase: 1 LLM call with tools=[]
      - execute phase: 2 LLM calls (search_journal then final answer)
      - tool dispatch records tool_calls JSON + counters
      - reflect_turn task enqueued
      - turn_outcome recorded
-  3. POST /sessions/{id}/close rolls totals up
+  3. POST /v1/sessions/{id}/close rolls totals up
 
 Also verifies the budget-tail "wrap up" nudge logic by directly invoking the
 private helper (cheaper than a 11-round LLM stub).
@@ -59,6 +59,30 @@ CALL_LOG: list[ChatRequest] = []
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _consume_sse(
+    client, path: str, *, json: dict | None = None
+) -> list[dict]:
+    """POST and parse the SSE stream into a list of {event, data} dicts."""
+    events: list[dict] = []
+    async with client.stream("POST", path, json=json or {}) as resp:
+        assert resp.status_code == 200, await resp.aread()
+        event_type = "message"
+        data_lines: list[str] = []
+        async for line in resp.aiter_lines():
+            if line == "":
+                if data_lines or event_type != "message":
+                    events.append({
+                        "event": event_type, "data": "\n".join(data_lines),
+                    })
+                event_type = "message"
+                data_lines = []
+            elif line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+    return events
 
 
 async def _create_schema() -> None:
@@ -205,27 +229,43 @@ async def main():
     transport = ASGITransport(app=app)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
-            r = await c.post("/sessions",
+            r = await c.post("/v1/sessions",
                              json={"initiating_user_message": "告诉我 Raft 是什么"})
             assert r.status_code == 201, r.text
             session_id = r.json()["session_id"]
             print("[1] session created:", session_id)
 
-            r = await c.post(f"/sessions/{session_id}/turn",
-                             json={"user_message": "告诉我 Raft 是什么"})
-            assert r.status_code == 200, r.text
-            turn = r.json()
-            print("[2] turn complete:")
-            print("    conversation_id:", turn["conversation_id"])
-            print("    truncated:", turn["truncated"])
-            print("    usage:", turn["usage"])
-            print("    plan:", turn["plan"][:80])
-            print("    answer:", turn["agent_response"][:120])
+            events = await _consume_sse(
+                c, f"/v1/chat/{session_id}", json={"query": "告诉我 Raft 是什么"}
+            )
+            seq = [ev["event"] for ev in events]
+            print("[2] event sequence:", seq)
 
-            assert turn["truncated"] is False
-            assert "Raft" in turn["agent_response"]
-            assert turn["usage"]["llm_calls"] == 3
-            assert turn["usage"]["tool_calls"] == 1
+            # Required event_types in order
+            assert "conversation" in seq
+            assert "planning" in seq
+            assert "plan" in seq
+            assert seq.count("thinking") >= 2
+            assert seq.count("tool_call") == 1
+            assert seq.count("tool_result") == 1
+            assert seq.count("answer") == 1
+            assert seq[-1] == "done"
+
+            conversation_id = next(ev["data"] for ev in events
+                                   if ev["event"] == "conversation")
+            answer = next(ev["data"] for ev in events if ev["event"] == "answer")
+            done = json.loads(
+                next(ev["data"] for ev in events if ev["event"] == "done")
+            )
+            print("    conversation_id:", conversation_id)
+            print("    truncated:", done["truncated"])
+            print("    tokens_in/out:", done["tokens_in"], done["tokens_out"])
+            print("    answer:", answer[:120])
+
+            assert done["truncated"] is False
+            assert "Raft" in answer
+            assert done["llm_calls"] == 3
+            assert done["tool_calls"] == 1
 
     # ---- DB-level invariants ----------------------------------------------
     factory = get_session_factory()
@@ -278,7 +318,7 @@ async def main():
     transport = ASGITransport(app=app)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
-            r = await c.post(f"/sessions/{session_id}/close")
+            r = await c.post(f"/v1/sessions/{session_id}/close")
             assert r.status_code == 200, r.text
             closed = r.json()
             print("[6] closed totals:", closed["totals"])

@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -21,6 +22,16 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marginalia.db.models.base import Base, IdMixin, TimestampMixin
+
+
+INBOX_CATALOG_ID = "00000000-0000-0000-0000-00000000inbx"
+"""Fixed UUID for the system `_inbox` catalog (plan §2.4).
+
+Seeded by the baseline migration as `(name='_inbox', parent_id=NULL,
+is_system=True)`. Files whose Phase-2 LLM routing returns null or an
+unresolvable catalog path land here. `restructure_catalogs` reassigns
+entries by scanning `WHERE catalog_id = INBOX_CATALOG_ID`.
+"""
 
 
 class Catalog(Base, IdMixin, TimestampMixin):
@@ -42,6 +53,7 @@ class Catalog(Base, IdMixin, TimestampMixin):
     description: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     extra: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -61,6 +73,7 @@ class View(Base, IdMixin, TimestampMixin):
     extra: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     filter_spec: Mapped[Any] = mapped_column(JSON, nullable=False, default=dict)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Tag(Base, IdMixin, TimestampMixin):
@@ -85,6 +98,10 @@ class Tag(Base, IdMixin, TimestampMixin):
     )
     doc_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_reaffirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reaffirm_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class TagAlias(Base, IdMixin):
@@ -131,3 +148,7 @@ class EntryTag(Base):
     )
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_reaffirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reaffirm_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

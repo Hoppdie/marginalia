@@ -21,3 +21,7 @@ build/
 
 conversation-*.zip
 
+# E2E test working directories — populated by tests/test_*_e2e.py
+# at runtime; should never be committed.
+tests/_*_e2e_data/
+

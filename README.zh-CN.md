@@ -20,22 +20,25 @@ relations、summary）属于 agent，由使用过程慢慢塑造成形。
 python -m venv .venv
 source .venv/Scripts/activate            # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-cp .env.example .env                     # 然后编辑 LLM_DEFAULT_API_KEY
+
+# 2. 初始化工作目录（在你想放笔记的地方）
+mkdir my-library && cd my-library
+marginalia init                           # 生成 .env / data/ / .marginalia/
+# 编辑 .env 填 LLM_DEFAULT_API_KEY
 alembic upgrade head
 
-# 2. 起 server + worker（生产用两个进程）
-uvicorn marginalia.main:app               # 终端 1
-marginalia-worker                         # 终端 2
-
-# 3. 灌入示例数据
-python samples/seed.py
-
-# 4. 对话
+# 3. 打开 marginalia
 marginalia
-marginalia> /tree
-marginalia> /search 共识
+marginalia> /upload paper.pdf /
 marginalia> 帮我对比 Raft 和 Paxos
 ```
+
+`marginalia` 一个命令进程通吃——server、worker、CLI 都在同一进程
+里，跟 Claude Code、DeepSeek TUI 同样的形态。不用开两个终端。
+
+只有当你想多机共享同一个知识库（笔记本 + 台式机）时，才把 server
+拆出来跑成独立进程，CLI 通过 `--server URL` 连过去。见下文"部署
+形态"。
 
 ## CLI 长这样
 
@@ -56,6 +59,23 @@ marginalia> 帮我对比 Raft 和 Paxos
 /on-conflict rename|error|skip         切换重名策略
 /clear / /new                          关闭 / 开启对话 session
 /quit
+```
+
+跟 agent 对话时不是死等的 spinner——是带状态反馈的事件流：
+
+```
+marginalia> 帮我对比 Raft 和 Paxos
+⠋ 制定调查计划...
+⠋ 调用 search_journal(q="raft consensus")
+⠋ 调用 read_files(entry_id=...)
+⠋ 调查员思考中...
+✓ 回答已就绪
+
+# Raft vs Paxos
+Raft 把 Paxos 拆成了三个相对独立的子问题...
+[^a]: entry_id=...
+
+  [tokens in=3300 out=340 tools=2 llm_calls=3 4521ms]
 ```
 
 ## 架构一句话概括
@@ -83,6 +103,27 @@ marginalia> 帮我对比 Raft 和 Paxos
 完整设计见 [`design.md`](design.md)。架构概览随 samples 一起：
 `samples/architecture.md`。
 
+## API
+
+REST 端点全部在 `/v1/` 前缀下：
+
+```
+POST /v1/upload                         上传文件
+GET  /v1/folders                        文件夹树
+GET  /v1/file-entries/{id}/...          单文件操作
+GET  /v1/search                         元数据召回
+POST /v1/sessions                       开 session
+POST /v1/chat/{session_id}              聊天（SSE 流）
+POST /v1/sessions/{id}/close            关 session
+GET  /v1/conversations/{id}/export      导出对话 zip
+GET  /health                            探活（不带 v1，监控惯例）
+```
+
+`POST /v1/chat/{session_id}` 返回 `text/event-stream`，事件类型：
+`conversation` / `planning` / `plan` / `thinking` / `tool_call` /
+`tool_result` / `answer` / `error` / `done`。这是 CLI 状态机渲染的
+基础。
+
 ## 配置
 
 所有设置走 `.env`。重点：
@@ -94,7 +135,7 @@ SQLITE_PATH=./data/marginalia.db
 STORAGE_BACKEND=local            # 或 s3
 LOCAL_STORAGE_ROOT=./data/objects
 
-WORKER_ENABLED=false             # true = TaskRunner 跑在 API 进程内（开发）
+WORKER_ENABLED=true              # embedded 模式默认；TaskRunner 跑在 CLI/server 进程内
 
 LLM_DEFAULT_PROVIDER=openai      # 或 anthropic
 LLM_DEFAULT_API_KEY=sk-...
@@ -102,6 +143,9 @@ LLM_DEFAULT_MODEL=gpt-4o-mini
 # 5 个 profile 的覆盖项（chat / reflect / ingest / vision / audio）：
 LLM_REFLECT_MODEL=gpt-4o
 LLM_VISION_MODEL=gpt-4o
+
+# 多机模式专用
+MARGINALIA_SERVER=               # 不空 = remote 模式，跳过 embedded
 ```
 
 OpenAI-compatible 端点（Together、Groq、DeepSeek、本地 vLLM / ollama）
@@ -109,16 +153,37 @@ OpenAI-compatible 端点（Together、Groq、DeepSeek、本地 vLLM / ollama）
 
 ## 部署形态
 
+**默认（embedded）**：`marginalia` 一启动，FastAPI app + TaskRunner 都
+在同一进程里。HTTP 不出进程，`httpx.ASGITransport` 直接调 ASGI 函数。
+99% 的使用场景就是这样。
+
+```
+   ┌──────────────────────────────────────┐
+   │  marginalia  (CLI + ASGI + worker)   │
+   └──────────────────────────────────────┘
+```
+
+**多机共享**（可选）：把 server 拆成独立进程，CLI 通过 HTTP 连过去。
+SQLite 同时只能被一个进程写——多机请用 Postgres。
+
 ```
    ┌─────────────┐         ┌──────────────────┐
    │  marginalia │   HTTP  │  uvicorn server  │
-   │     CLI     ├────────►│  marginalia.main │  (WORKER_ENABLED=false)
+   │     CLI     ├────────►│  marginalia.main │  (WORKER_ENABLED=true)
    └─────────────┘         └────────┬─────────┘
-                                    │  共享 DB + 对象存储
+                                    │  共享 Postgres + 对象存储
                                     │
-                            ┌───────▼────────────┐
-                            │ marginalia-worker  │  (TaskRunner)
-                            └────────────────────┘
+                            其他客户端连同一 server
+```
+
+启动远端 server：
+
+```bash
+uvicorn marginalia.main:app --host 0.0.0.0 --port 8000
+# CLI 端：
+marginalia --server http://server.lan:8000
+# 或写到 ~/.marginalia/.env：
+MARGINALIA_SERVER=http://server.lan:8000
 ```
 
 ## 开发
@@ -127,14 +192,16 @@ OpenAI-compatible 端点（Together、Groq、DeepSeek、本地 vLLM / ollama）
 # 跑单个 e2e 测试
 .venv/Scripts/python tests/test_agent_e2e.py
 
-# 跑所有 e2e
+# 跑所有 e2e（27 个）
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-20 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
-normalize_tags / enrich_tags / lifecycle / restructure / agent runtime
-/ agent tools / user mgmt / CLI / image pipeline / user files / export
-/ pdf / pdf-with-images / duckdb tools / worker daemon。
+27 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
+normalize_tags / enrich_tags / lifecycle / restructure / agent runtime /
+agent tools / user mgmt / CLI / image pipeline / user files / export /
+pdf / pdf-with-images / duckdb tools / worker daemon / mine_corpus_evidence /
+mine_session_cooccurrence / propose_views / refresh_entry_extra /
+container / git repo / cli upgrade（含 embedded 模式 smoke）。
 
 ## 状态
 
@@ -152,6 +219,5 @@ Copyright (c) 2026 shenmintao
 Marginalia 采用 GNU Affero General Public License v3.0 或更新版本
 (AGPL-3.0-or-later) 授权。完整条款见 [LICENSE](LICENSE)。
 
-如果你以网络服务形式运行 Marginalia 的修改版本,AGPL 要求你必须向
+如果你以网络服务形式运行 Marginalia 的修改版本，AGPL 要求你必须向
 使用该服务的用户提供对应源码。
-

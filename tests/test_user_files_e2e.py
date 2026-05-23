@@ -148,7 +148,7 @@ async def main():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url=base) as c:
             # ---- 1. Search by display_name ---------------------------
-            r = await c.get("/search", params={"q": "raft"})
+            r = await c.get("/v1/search", params={"q": "raft"})
             assert r.status_code == 200, r.text
             results = r.json()["entries"]
             print("[1] /search 'raft':", [e["display_name"] for e in results])
@@ -159,7 +159,7 @@ async def main():
             assert "extra" not in results[0]
 
             # ---- 2. Search by content summary ------------------------
-            r = await c.get("/search", params={"q": "consensus"})
+            r = await c.get("/v1/search", params={"q": "consensus"})
             assert r.status_code == 200
             results = r.json()["entries"]
             names = {e["display_name"] for e in results}
@@ -176,7 +176,7 @@ async def main():
                 assert "kind" not in e
 
             # ---- 4. Metadata: includes summary, no AI fields ---------
-            r = await c.get(f"/file-entries/{seeded['e_a']}/metadata")
+            r = await c.get(f"/v1/file-entries/{seeded['e_a']}/metadata")
             assert r.status_code == 200, r.text
             meta = r.json()
             print("[4] metadata keys:", sorted(meta.keys()))
@@ -189,13 +189,13 @@ async def main():
                 assert forbidden not in meta, f"{forbidden} leaked into metadata"
 
             # ---- 5. Metadata 404 on soft-deleted ---------------------
-            r = await c.get(f"/file-entries/{seeded['e_deleted']}/metadata")
+            r = await c.get(f"/v1/file-entries/{seeded['e_deleted']}/metadata")
             assert r.status_code == 404
             print("[5] soft-deleted metadata 404 OK")
 
             # ---- 6. Download streams correct bytes -------------------
             async with c.stream(
-                "GET", f"/file-entries/{seeded['e_a']}/download"
+                "GET", f"/v1/file-entries/{seeded['e_a']}/download"
             ) as r:
                 assert r.status_code == 200
                 cd = r.headers.get("content-disposition") or ""
@@ -208,7 +208,7 @@ async def main():
             assert bytes(buf) == seeded["body_a"]
 
             # ---- 7. Download 404 on soft-deleted ---------------------
-            r = await c.get(f"/file-entries/{seeded['e_deleted']}/download")
+            r = await c.get(f"/v1/file-entries/{seeded['e_deleted']}/download")
             assert r.status_code == 404
             print("[7] soft-deleted download 404 OK")
 

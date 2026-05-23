@@ -191,7 +191,7 @@ async def main():
             # ended → 200 zip
             async with c.stream(
                 "GET",
-                f"/conversations/{seeded['conv_done']}/export",
+                f"/v1/conversations/{seeded['conv_done']}/export",
             ) as r:
                 assert r.status_code == 200, r.text
                 hdr_count = int(r.headers.get("x-citation-count") or 0)
@@ -249,14 +249,14 @@ async def main():
 
             # ---- 3. unended conv → 409 ---------------------------------
             r = await c.get(
-                f"/conversations/{seeded['conv_running']}/export"
+                f"/v1/conversations/{seeded['conv_running']}/export"
             )
             assert r.status_code == 409
             print("[3] unended conversation rejected")
 
             # ---- 4. unknown conv → 404 --------------------------------
             r = await c.get(
-                "/conversations/nonexistent-id/export"
+                "/v1/conversations/nonexistent-id/export"
             )
             assert r.status_code == 404
             print("[4] unknown conversation 404")

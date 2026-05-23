@@ -170,7 +170,7 @@ async def main() -> None:
                     "structured JSON describing the document.\n"
                 ).encode("utf-8")
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/research/marginalia/notes.md"},
                     files={"file": ("notes.md", io.BytesIO(doc), "text/markdown")},
                 )

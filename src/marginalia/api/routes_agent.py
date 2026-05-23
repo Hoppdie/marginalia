@@ -1,11 +1,14 @@
-"""Agent HTTP routes — design.md §12.2.
+"""Session HTTP routes — design.md §12.2.
 
-Two endpoints:
   POST /sessions               — open a new session
-  POST /sessions/{id}/turn     — run one user turn (blocking, returns final answer)
+  POST /sessions/{id}/close    — close a session, return totals
 
-Sessions are server-managed containers; clients keep a session_id cookie /
-header so subsequent /turn calls land in the same conversation history.
+Chat (per-turn agent execution) lives in routes_chat.py as
+`POST /chat/{session_id}` with SSE streaming.
+
+Sessions are server-managed containers; clients keep a session_id and
+post chat turns into it; reflect_turn is enqueued per turn (in
+agent.runtime), not on close.
 """
 from __future__ import annotations
 
@@ -15,21 +18,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marginalia.agent.runtime import run_turn
-from marginalia.agent.types import AgentTurnError
 from marginalia.db.models import Session as SessionRow
 from marginalia.db.session import get_session
 from marginalia.services import sessions as session_service
 
-router = APIRouter(tags=["agent"])
+router = APIRouter(tags=["sessions"])
 
 
 class CreateSessionBody(BaseModel):
     initiating_user_message: str | None = None
-
-
-class TurnBody(BaseModel):
-    user_message: str
 
 
 @router.post("/sessions", status_code=201)
@@ -43,40 +40,6 @@ async def create_session(
     return {
         "session_id": s.id,
         "started_at": s.started_at.isoformat() if s.started_at else None,
-    }
-
-
-@router.post("/sessions/{session_id}/turn", status_code=200)
-async def post_turn(
-    session_id: str,
-    body: TurnBody,
-    db: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    s = await db.get(SessionRow, session_id)
-    if s is None:
-        raise HTTPException(status_code=404, detail="session not found")
-    if s.ended_at is not None:
-        raise HTTPException(status_code=409, detail="session already ended")
-    try:
-        result = await run_turn(
-            session_id=session_id,
-            user_message=body.user_message,
-        )
-    except AgentTurnError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {
-        "session_id": result.session_id,
-        "conversation_id": result.conversation_id,
-        "agent_response": result.agent_response,
-        "plan": result.plan_text,
-        "truncated": result.truncated,
-        "usage": {
-            "input_tokens": result.usage.input_tokens,
-            "output_tokens": result.usage.output_tokens,
-            "tool_calls": result.usage.tool_calls,
-            "llm_calls": result.usage.llm_calls,
-            "duration_ms": result.usage.duration_ms,
-        },
     }
 
 
@@ -107,3 +70,4 @@ async def close_session(
             "llm_calls": closed.total_llm_calls,
         },
     }
+

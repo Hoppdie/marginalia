@@ -168,7 +168,7 @@ async def main():
         try:
             async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
                 r = await c.post(
-                    "/upload",
+                    "/v1/upload",
                     params={"remote_path": "/tests/images/"},
                     files={"file": ("pixel.png", io.BytesIO(PNG_BYTES), "image/png")},
                 )
