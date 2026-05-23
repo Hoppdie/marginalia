@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from marginalia.config import get_settings, resolve_profile
@@ -29,6 +30,7 @@ from marginalia.pipelines.base import (
     Pipeline,
     PipelineContext,
     PipelineResult,
+    SegmentResult,
     TagSuggestion,
 )
 from marginalia.pipelines.registry import register_pipeline
@@ -39,6 +41,11 @@ log = logging.getLogger(__name__)
 # Truncate very long files; we still want a holistic summary, but we keep the
 # prompt bounded. 60 KB ≈ 15-20K tokens depending on language.
 MAX_TEXT_BYTES = 60_000
+
+# read_segment limits — we read more than the LLM-indexing path because the
+# agent might want late chunks of a long file.
+READ_SEGMENT_BYTES_CAP = 4 * 1024 * 1024  # 4 MB
+DEFAULT_MAX_CHARS = 8000
 
 TEXT_PIPELINE_SYSTEM = """You are Marginalia's text-document indexer.
 
@@ -194,13 +201,106 @@ class TextPipeline(Pipeline):
             ],
         )
 
+    # ---- read_segment -----------------------------------------------------
+
+    async def read_segment(
+        self,
+        *,
+        file_row: Any,
+        args: dict[str, Any],
+        storage: StorageBackend,
+    ) -> SegmentResult:
+        """Resolve the args dict against this file's text body.
+
+        Priority (first matching field wins):
+          1. pattern    → regex search with context_lines / max_matches
+          2. section_id → look up in description.sections, return its body
+          3. heading    → find by section title, return its body
+          4. line_start → return the line range
+          5. (default)  → return the offset..offset+max_chars chunk
+
+        offset/max_chars also act as a clamp on the result of (2)-(4).
+        """
+        body = await self._read_text(storage, file_row.storage_key,
+                                      cap=READ_SEGMENT_BYTES_CAP)
+
+        offset = max(0, int(args.get("offset") or 0))
+        max_chars = int(args.get("max_chars") or DEFAULT_MAX_CHARS)
+        if max_chars <= 0:
+            max_chars = DEFAULT_MAX_CHARS
+
+        pattern = (args.get("pattern") or "").strip()
+        if pattern:
+            return _pattern_search(
+                body=body, pattern=pattern,
+                context_lines=int(args.get("context_lines") or 2),
+                max_matches=int(args.get("max_matches") or 20),
+            )
+
+        section_id = (args.get("section_id") or "").strip()
+        heading = (args.get("heading") or "").strip()
+        if section_id or heading:
+            sections = _sections_from_file(file_row)
+            if sections is None:
+                return SegmentResult(
+                    error="no description.sections in file",
+                )
+            target = _find_section(sections, section_id=section_id, heading=heading)
+            if target is None:
+                miss = section_id or f"heading={heading!r}"
+                return SegmentResult(error=f"section not found: {miss}")
+            text, extras = _section_body(target, body)
+            return _clamp(text, offset, max_chars, extras=extras)
+
+        line_start = args.get("line_start")
+        line_end = args.get("line_end")
+        if line_start:
+            try:
+                ls = max(1, int(line_start))
+            except (TypeError, ValueError):
+                return SegmentResult(error="line_start must be an integer")
+            try:
+                le = int(line_end) if line_end else ls
+            except (TypeError, ValueError):
+                return SegmentResult(error="line_end must be an integer")
+            if le < ls:
+                return SegmentResult(error="line_end must be >= line_start")
+            lines = body.splitlines()
+            sliced = lines[ls - 1: le]
+            text = "\n".join(sliced)
+            return _clamp(
+                text, offset, max_chars,
+                extras={
+                    "line_start": ls, "line_end": le,
+                    "line_count": len(sliced),
+                    "total_lines": len(lines),
+                },
+            )
+
+        # Default: chunk-read. offset..offset+max_chars of the entire body.
+        total = len(body)
+        chunk = body[offset: offset + max_chars]
+        truncated = (offset + len(chunk)) < total
+        return SegmentResult(
+            text=chunk,
+            extras={
+                "offset": offset,
+                "char_count": len(chunk),
+                "total_chars": total,
+                "truncated": truncated,
+                "next_offset": offset + len(chunk) if truncated else None,
+            },
+        )
+
     @staticmethod
-    async def _read_text(storage: StorageBackend, key: str) -> str:
+    async def _read_text(
+        storage: StorageBackend, key: str, cap: int = MAX_TEXT_BYTES,
+    ) -> str:
         buf = bytearray()
         async for chunk in storage.get(key):
             buf.extend(chunk)
-            if len(buf) > MAX_TEXT_BYTES:
-                buf = bytearray(buf[:MAX_TEXT_BYTES])
+            if len(buf) > cap:
+                buf = bytearray(buf[:cap])
                 break
         # robust decode — text mime says "should be utf-8" but we tolerate
         # latin-1 / arbitrary as last resort.
@@ -210,3 +310,149 @@ class TextPipeline(Pipeline):
             except UnicodeDecodeError:
                 continue
         return buf.decode("utf-8", errors="replace")
+
+
+# ---- read_segment helpers ----------------------------------------------------
+
+def _sections_from_file(file_row: Any) -> list[dict] | None:
+    desc = getattr(file_row, "description", None)
+    if not isinstance(desc, dict):
+        return None
+    sections = desc.get("sections")
+    if not isinstance(sections, list):
+        return None
+    return [s for s in sections if isinstance(s, dict)]
+
+
+def _find_section(
+    sections: list[dict], *, section_id: str = "", heading: str = "",
+) -> dict | None:
+    if section_id:
+        for s in sections:
+            if s.get("id") == section_id:
+                return s
+    if heading:
+        for s in sections:
+            if (s.get("title") or "").strip() == heading.strip():
+                return s
+    return None
+
+
+def _section_body(section: dict, full_text: str) -> tuple[str, dict[str, Any]]:
+    """Resolve a section's anchor against the full text body.
+
+    Returns (text, extras). Falls back to the section's own summary +
+    key_terms if the anchor cannot be located in the body.
+    """
+    anchor = section.get("anchor") or {}
+    a_unit = anchor.get("unit")
+    a_value = anchor.get("value")
+
+    if a_unit == "lines" and isinstance(a_value, str) and "-" in a_value:
+        try:
+            start, end = (int(x) for x in a_value.split("-"))
+            lines = full_text.splitlines()
+            sliced = lines[max(0, start - 1): end]
+            return "\n".join(sliced), {
+                "title": section.get("title"),
+                "section_id": section.get("id"),
+                "anchor": {"unit": "lines", "value": a_value},
+                "line_count": len(sliced),
+            }
+        except ValueError:
+            pass
+
+    title = (section.get("title") or "").strip()
+    if title:
+        idx = full_text.find(title)
+        if idx != -1:
+            # Take from heading to the next ~4KB of text (or to next heading
+            # if we can spot one — kept simple here).
+            return full_text[idx: idx + 4096], {
+                "title": title,
+                "section_id": section.get("id"),
+                "located_via": "title-scan",
+            }
+
+    return "", {
+        "title": section.get("title"),
+        "section_id": section.get("id"),
+        "summary": section.get("summary"),
+        "key_terms": section.get("key_terms"),
+        "note": "anchor not resolvable from body; section summary returned in extras",
+    }
+
+
+def _clamp(
+    text: str, offset: int, max_chars: int,
+    *, extras: dict[str, Any] | None = None,
+) -> SegmentResult:
+    extras = dict(extras or {})
+    total = len(text)
+    chunk = text[offset: offset + max_chars]
+    truncated = (offset + len(chunk)) < total
+    extras.update({
+        "offset": offset,
+        "char_count": len(chunk),
+        "total_chars": total,
+        "truncated": truncated,
+    })
+    if truncated:
+        extras["next_offset"] = offset + len(chunk)
+    if not chunk and not extras.get("note"):
+        return SegmentResult(text="", error="empty result", extras=extras)
+    return SegmentResult(text=chunk, extras=extras)
+
+
+def _pattern_search(
+    *, body: str, pattern: str, context_lines: int, max_matches: int,
+) -> SegmentResult:
+    try:
+        rx = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+    except re.error as exc:
+        return SegmentResult(error=f"invalid regex: {exc}")
+
+    lines = body.splitlines()
+    line_starts: list[int] = [0]
+    for i, ln in enumerate(lines):
+        line_starts.append(line_starts[-1] + len(ln) + 1)
+
+    def line_of(pos: int) -> int:
+        # binary search would be tighter; simple linear is fine here
+        for i, start in enumerate(line_starts):
+            if start > pos:
+                return i  # 1-indexed
+        return len(lines)
+
+    hits: list[dict[str, Any]] = []
+    for m in rx.finditer(body):
+        if len(hits) >= max_matches:
+            break
+        line_no = line_of(m.start())
+        s = max(0, line_no - 1 - context_lines)
+        e = min(len(lines), line_no + context_lines)
+        hits.append({
+            "line": line_no,
+            "match": m.group(0)[:200],
+            "context": "\n".join(lines[s:e]),
+        })
+
+    if not hits:
+        return SegmentResult(
+            text="",
+            error="no matches",
+            extras={"pattern": pattern},
+        )
+
+    rendered = "\n\n".join(
+        f"[L{h['line']}] {h['match']}\n  ┊ {h['context']}"
+        for h in hits
+    )
+    return SegmentResult(
+        text=rendered,
+        extras={
+            "pattern": pattern,
+            "match_count": len(hits),
+            "hits": hits,
+        },
+    )

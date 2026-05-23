@@ -13,7 +13,7 @@ Tools covered:
   4. materialize_view (catalog_subtree + tags_all + lifecycle)
   5. search_metadata (text + tags_all + catalog_subtree + lifecycle + view_id)
   6. read_entries_metadata (full hydration + related_entries)
-  7. read_files (section / heading / lines / bytes / search)
+  7. read_files (section_id / heading / line_start-line_end / offset+max_chars / pattern)
 """
 from __future__ import annotations
 
@@ -309,44 +309,61 @@ async def main():
         "requests": [
             {
                 "entry_id": seeded["e_a"],
-                "locations": [
-                    {"unit": "section", "value": "s1"},
-                    {"unit": "heading", "value": "Pipeline"},
-                    {"unit": "lines", "value": "5-7"},
-                    {"unit": "bytes", "value": "0-25"},
+                "reads": [
+                    {"section_id": "s1"},
+                    {"heading": "Pipeline"},
+                    {"line_start": 5, "line_end": 7},
+                    {"offset": 0, "max_chars": 25},
+                    {"pattern": "consensus", "context_lines": 1, "max_matches": 5},
                 ],
-                "search": "consensus",
             },
         ],
     })
-    print("[7] read_files locations:",
-          [(loc.get("unit"), 'text' in loc, loc.get('error')) for loc in rf["results"][0]["locations"]])
+    print("[7] read_files reads:",
+          [(r.get("ok"), 'text' in r) for r in rf["results"][0]["reads"]])
     assert rf["count"] == 1
-    locs = rf["results"][0]["locations"]
-    # section s1 → Overview body
-    section_loc = locs[0]
-    assert "Overview" in (section_loc.get("text") or section_loc.get("title") or ""), section_loc
+    reads = rf["results"][0]["reads"]
+    # section s1 → Overview body (or extras hint when anchor unresolvable)
+    section_read = reads[0]
+    assert section_read["ok"] is True, section_read
+    section_text = section_read.get("text", "")
+    section_extras = section_read.get("extras", {})
+    assert (
+        "Overview" in section_text
+        or section_extras.get("title") == "Overview"
+    ), section_read
     # heading "Pipeline"
-    heading_loc = locs[1]
-    assert "Pipeline" in (heading_loc.get("text") or "") or heading_loc.get("title") == "Pipeline", heading_loc
+    heading_read = reads[1]
+    assert heading_read["ok"] is True, heading_read
+    heading_text = heading_read.get("text", "")
+    heading_extras = heading_read.get("extras", {})
+    assert (
+        "Pipeline" in heading_text
+        or heading_extras.get("title") == "Pipeline"
+    ), heading_read
     # lines 5-7
-    lines_loc = locs[2]
-    assert "Pipeline" in (lines_loc.get("text") or ""), lines_loc
-    # bytes 0-25
-    bytes_loc = locs[3]
-    assert "Overview" in (bytes_loc.get("text") or ""), bytes_loc
-    # search 'consensus' must hit
-    hits = rf["results"][0]["search_hits"]
-    print("[7] search_hits count:", len(hits or []))
-    assert hits and len(hits) >= 1
+    lines_read = reads[2]
+    assert lines_read["ok"] is True
+    assert "Pipeline" in (lines_read.get("text") or ""), lines_read
+    # offset/max_chars (the "bytes 0-25" equivalent in the new contract)
+    chunk_read = reads[3]
+    assert chunk_read["ok"] is True
+    assert "Overview" in (chunk_read.get("text") or ""), chunk_read
+    # pattern hits 'consensus'
+    pattern_read = reads[4]
+    assert pattern_read["ok"] is True
+    assert pattern_read["extras"]["match_count"] >= 1, pattern_read
+    print("[7] pattern match_count:", pattern_read["extras"]["match_count"])
 
     # invalid section_id → error
     rf_bad = await _call("read_files", {
-        "requests": [{"entry_id": seeded["e_a"], "locations": [
-            {"unit": "section", "value": "no-such-section"},
+        "requests": [{"entry_id": seeded["e_a"], "reads": [
+            {"section_id": "no-such-section"},
         ]}],
     })
-    assert rf_bad["results"][0]["locations"][0]["error"] == "section_id not found"
+    bad_read = rf_bad["results"][0]["reads"][0]
+    assert bad_read["ok"] is False
+    assert "section not found" in bad_read["error"], bad_read
 
     print("\nALL AGENT_TOOLS E2E CHECKS PASSED")
 

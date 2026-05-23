@@ -26,6 +26,7 @@ from marginalia.pipelines.base import (
     Pipeline,
     PipelineContext,
     PipelineResult,
+    SegmentResult,
     TagSuggestion,
 )
 from marginalia.pipelines.registry import register_pipeline
@@ -193,3 +194,58 @@ class ImagePipeline(Pipeline):
                 buf = bytearray(buf[:MAX_IMAGE_BYTES])
                 break
         return bytes(buf)
+
+    # ---- read_segment -----------------------------------------------------
+
+    async def read_segment(
+        self,
+        *,
+        file_row: Any,
+        args: dict[str, Any],
+        storage: StorageBackend,
+    ) -> SegmentResult:
+        """Images don't have a text body. read_segment renders the
+        ingested description as text — summary plus per-region notes —
+        so the agent can quote from it. Generic offset/max_chars still
+        apply for chunked reads of long descriptions."""
+        body = _render_image_description(file_row)
+        offset = max(0, int(args.get("offset") or 0))
+        max_chars = int(args.get("max_chars") or 8000)
+        if max_chars <= 0:
+            max_chars = 8000
+        total = len(body)
+        chunk = body[offset: offset + max_chars]
+        truncated = (offset + len(chunk)) < total
+        extras: dict[str, Any] = {
+            "offset": offset,
+            "char_count": len(chunk),
+            "total_chars": total,
+            "truncated": truncated,
+            "kind": "image",
+        }
+        if truncated:
+            extras["next_offset"] = offset + len(chunk)
+        if not chunk:
+            return SegmentResult(text="", error="empty result", extras=extras)
+        return SegmentResult(text=chunk, extras=extras)
+
+
+def _render_image_description(file_row: Any) -> str:
+    """Format image description into agent-readable text."""
+    summary = (getattr(file_row, "summary", None) or "").strip()
+    desc = getattr(file_row, "description", None) or {}
+    parts: list[str] = []
+    if summary:
+        parts.append(summary)
+    if isinstance(desc, dict):
+        regions = desc.get("regions") or []
+        if isinstance(regions, list) and regions:
+            parts.append("")
+            parts.append("Regions:")
+            for i, r in enumerate(regions, start=1):
+                if not isinstance(r, dict):
+                    continue
+                title = (r.get("title") or "").strip() or f"region {i}"
+                detail = (r.get("description") or r.get("summary") or "").strip()
+                parts.append(f"  [{i}] {title}: {detail}")
+    return "\n".join(parts).strip()

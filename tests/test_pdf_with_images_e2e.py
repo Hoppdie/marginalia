@@ -212,9 +212,15 @@ def _install_fakes() -> None:
     vision = _FakeVision()
     ingest = _FakeIngest()
     import marginalia.pipelines.pdf as pmod
-    import marginalia.pipelines.pdf_images as imod
-    pmod.get_chat_client = lambda profile="ingest": ingest  # type: ignore
-    imod.get_chat_client = lambda profile="vision": vision  # type: ignore
+    # PDF image extraction + VLM description live in pdf.py too. Patch
+    # `get_chat_client` once: the fake decides by profile name. Ingest
+    # path asks for "ingest"; image-describer asks for "vision".
+
+    def _pick_client(profile: str = "ingest"):
+        if profile == "vision":
+            return vision
+        return ingest
+    pmod.get_chat_client = _pick_client  # type: ignore
 
 
 # ---- helpers ---------------------------------------------------------------

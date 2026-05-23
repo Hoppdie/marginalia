@@ -1,23 +1,34 @@
-"""PDF pipeline (design.md §11.3, V1 direct-read only).
+"""PDF pipeline (design.md §11.3).
 
-Handles application/pdf and `.pdf`. V1 strategy: extract text via pypdf,
-emit per-page concatenated text, then run the same JSON-schema ingest
-prompt as the text pipeline but with a page-aware section schema.
+Handles application/pdf and `.pdf`. Strategy: pypdf extracts the text
+layer page by page; significant images are concurrently described by
+the vision LLM and inlined as `[Figure N.M] ...` lines next to their
+pages; the assembled body then goes through the same JSON-schema
+indexing prompt as the text pipeline, but with a page-aware section
+schema.
 
-PDFs without a text layer (scanned images) are flagged via a clean error
-in the pipeline output — the handler will mark the file as needing OCR.
-The actual OCR / vision-per-page path is V2 (Cycle 17b).
+PDFs without a text layer (scanned images) are flagged via a clean
+error in the pipeline output — the handler marks the file as needing
+OCR. An OCR / vision-per-page pipeline is on the next-cycle list.
+
+read_segment supports page_start / page_end ranges, regex pattern
+search across pages, and the generic offset/max_chars chunking.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import io
 import json
 import logging
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from marginalia.llm import (
     ChatMessage,
     ChatRequest,
+    ImageBlock,
     TextBlock,
     get_chat_client,
 )
@@ -25,6 +36,7 @@ from marginalia.pipelines.base import (
     Pipeline,
     PipelineContext,
     PipelineResult,
+    SegmentResult,
     TagSuggestion,
 )
 from marginalia.pipelines.registry import register_pipeline
@@ -165,10 +177,6 @@ class PdfPipeline(Pipeline):
         # Extract embedded figures and describe them via vision profile.
         # Single-image failures degrade to placeholder text; the ingest
         # call below still gets useful context.
-        from marginalia.pipelines.pdf_images import (
-            describe_images, extract_images, render_pages_with_figures,
-        )
-
         images = extract_images(body)
         described = await describe_images(images) if images else []
         body_text = render_pages_with_figures(text_per_page, described)
@@ -229,6 +237,79 @@ class PdfPipeline(Pipeline):
             buf.extend(chunk)
         return bytes(buf)
 
+    # ---- read_segment -----------------------------------------------------
+
+    READ_DEFAULT_MAX_CHARS = 8000
+
+    async def read_segment(
+        self,
+        *,
+        file_row: Any,
+        args: dict[str, Any],
+        storage: StorageBackend,
+    ) -> SegmentResult:
+        """Resolve args against a PDF's text body.
+
+        Field priority:
+          1. pattern             → regex search across all pages
+          2. page_start/page_end → return text for that page range
+          3. (default)           → return offset..offset+max_chars of the
+                                    full concatenated body
+
+        offset/max_chars further clamp the result of (2).
+        """
+        pdf_bytes = await self._read_bytes(storage, file_row.storage_key)
+        pages = self._extract_text(pdf_bytes)
+        total_pages = len(pages)
+        body = "\n\n".join(
+            f"[Page {i+1}]\n{txt}" for i, txt in enumerate(pages) if txt
+        )
+
+        offset = max(0, int(args.get("offset") or 0))
+        max_chars = int(args.get("max_chars") or self.READ_DEFAULT_MAX_CHARS)
+        if max_chars <= 0:
+            max_chars = self.READ_DEFAULT_MAX_CHARS
+
+        pattern = (args.get("pattern") or "").strip()
+        if pattern:
+            return _pdf_pattern_search(
+                pages=pages, pattern=pattern,
+                context_lines=int(args.get("context_lines") or 2),
+                max_matches=int(args.get("max_matches") or 20),
+            )
+
+        page_start = args.get("page_start")
+        page_end = args.get("page_end")
+        if page_start:
+            try:
+                ps = int(page_start)
+            except (TypeError, ValueError):
+                return SegmentResult(error="page_start must be an integer")
+            try:
+                pe = int(page_end) if page_end else ps
+            except (TypeError, ValueError):
+                return SegmentResult(error="page_end must be an integer")
+            if total_pages == 0:
+                return SegmentResult(error="PDF has no pages")
+            ps = max(1, min(ps, total_pages))
+            pe = max(ps, min(pe, total_pages))
+            slab = "\n\n".join(
+                f"[Page {i}]\n{pages[i-1]}" for i in range(ps, pe + 1)
+                if pages[i-1]
+            )
+            return _clamp_pdf(
+                slab, offset, max_chars,
+                extras={
+                    "page_start": ps, "page_end": pe,
+                    "total_pages": total_pages,
+                },
+            )
+
+        return _clamp_pdf(
+            body, offset, max_chars,
+            extras={"total_pages": total_pages},
+        )
+
     @staticmethod
     def _extract_text(pdf_bytes: bytes) -> list[str]:
         """Return text per page, capped at MAX_PAGES."""
@@ -266,3 +347,278 @@ class PdfPipeline(Pipeline):
             chunks.append(chunk)
             size += len(chunk)
         return "\n\n".join(chunks)
+
+
+# ---------------------------------------------------------------------------
+# Image extraction + VLM description
+#
+# Two responsibilities:
+#   (1) Walk the PDF and emit a small list of significant images,
+#       filtering icons / decorations.
+#   (2) Concurrently describe each image via the `vision` profile.
+#
+# Failure semantics differ from the main ingest path: a single image
+# failing here (VLM timeout, oversize, decode error) degrades to a
+# placeholder rather than blocking the surrounding PDF transaction.
+# ---------------------------------------------------------------------------
+
+MIN_IMAGE_BYTES = 512
+# Pixel-dimension test (>= MIN_IMAGE_PX in both axes) is the primary
+# significance filter. The byte test is a backstop catching truly
+# trivial extracts (single-color icons compressed to a few hundred bytes
+# even at large pixel dims).
+MIN_IMAGE_PX = 100
+MAX_IMAGES_PER_PAGE = 5
+MAX_IMAGES_PER_DOC = 30
+VLM_BATCH_SIZE = 5
+VLM_TIMEOUT_SECONDS = 30
+MAX_IMAGE_BYTES_PER_VLM = 4 * 1024 * 1024  # 4 MB cap per image to VLM
+
+_MIME_BY_EXT = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+
+
+FIGURE_DESCRIBE_SYSTEM = (
+    "You are Marginalia's figure describer. Given one image extracted from "
+    "a PDF, output ONE short paragraph (1-3 sentences) describing what the "
+    "image shows. Focus on: figure type (chart/diagram/photo/equation/"
+    "table-as-image), the key entities or numbers, and the takeaway. "
+    "Do NOT speculate beyond what is visible. Do NOT prefix with 'This "
+    "image shows' — just describe directly. Output plain text only."
+)
+
+
+@dataclass(slots=True)
+class ExtractedImage:
+    page_num: int       # 1-indexed
+    fig_index: int      # 1-indexed within the page
+    media_type: str
+    data: bytes
+    width: int
+    height: int
+
+
+@dataclass(slots=True)
+class DescribedImage:
+    page_num: int
+    fig_index: int
+    description: str
+    error: str | None = None
+
+
+def extract_images(pdf_bytes: bytes) -> list[ExtractedImage]:
+    """Walk the PDF and return significant images (icons filtered)."""
+    from pypdf import PdfReader  # imported lazily
+
+    out: list[ExtractedImage] = []
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+    except Exception:
+        log.exception("pypdf failed to open PDF for image extraction")
+        return out
+
+    total = 0
+    for page_num, page in enumerate(reader.pages, start=1):
+        try:
+            page_images = list(page.images)[:MAX_IMAGES_PER_PAGE]
+        except Exception:
+            log.exception("pypdf failed listing images on page %d", page_num)
+            continue
+
+        page_kept = 0
+        for fig_idx, img in enumerate(page_images, start=1):
+            data = img.data or b""
+            if len(data) < MIN_IMAGE_BYTES:
+                continue
+
+            width = height = 0
+            try:
+                pil = img.image
+                if pil is not None:
+                    width, height = pil.size
+            except Exception:
+                pass
+            if width and height:
+                if width < MIN_IMAGE_PX or height < MIN_IMAGE_PX:
+                    continue
+
+            ext = (img.name or "").rsplit(".", 1)[-1].lower()
+            media_type = _MIME_BY_EXT.get(ext, "image/png")
+
+            out.append(ExtractedImage(
+                page_num=page_num,
+                fig_index=page_kept + 1,
+                media_type=media_type,
+                data=data[:MAX_IMAGE_BYTES_PER_VLM],
+                width=width, height=height,
+            ))
+            page_kept += 1
+            total += 1
+            if total >= MAX_IMAGES_PER_DOC:
+                return out
+    return out
+
+
+async def describe_images(
+    images: list[ExtractedImage],
+) -> list[DescribedImage]:
+    """Send each image through the vision profile concurrently."""
+    if not images:
+        return []
+    client = get_chat_client("vision")
+    out: list[DescribedImage] = []
+
+    for batch_start in range(0, len(images), VLM_BATCH_SIZE):
+        batch = images[batch_start : batch_start + VLM_BATCH_SIZE]
+        results = await asyncio.gather(
+            *(_describe_one(client, img) for img in batch),
+            return_exceptions=True,
+        )
+        for img, res in zip(batch, results):
+            if isinstance(res, BaseException):
+                log.warning("VLM describe failed for fig %d.%d: %r",
+                            img.page_num, img.fig_index, res)
+                out.append(DescribedImage(
+                    page_num=img.page_num, fig_index=img.fig_index,
+                    description="(figure description unavailable)",
+                    error=repr(res),
+                ))
+            else:
+                out.append(res)
+    return out
+
+
+async def _describe_one(client, img: ExtractedImage) -> DescribedImage:
+    b64 = base64.b64encode(img.data).decode("ascii")
+    user_text = (
+        f"Figure on page {img.page_num} (fig {img.fig_index}) of a PDF. "
+        f"Describe in 1-3 sentences."
+    )
+    request = ChatRequest(
+        system=FIGURE_DESCRIBE_SYSTEM,
+        messages=[ChatMessage(role="user", content=[
+            TextBlock(text=user_text),
+            ImageBlock(media_type=img.media_type, data_b64=b64),
+        ])],
+        max_tokens=300,
+        temperature=0.2,
+    )
+    try:
+        resp = await asyncio.wait_for(
+            client.complete(request), timeout=VLM_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return DescribedImage(
+            page_num=img.page_num, fig_index=img.fig_index,
+            description="(figure description timed out)",
+            error="timeout",
+        )
+    text = (resp.text or "").strip() or "(empty VLM response)"
+    return DescribedImage(
+        page_num=img.page_num, fig_index=img.fig_index,
+        description=text,
+    )
+
+
+def render_pages_with_figures(
+    text_per_page: list[str],
+    described: list[DescribedImage],
+) -> str:
+    """Build the prompt body, with `[Figure X.Y] ...` lines appended to
+    each page's text block."""
+    by_page: dict[int, list[DescribedImage]] = {}
+    for d in described:
+        by_page.setdefault(d.page_num, []).append(d)
+
+    chunks: list[str] = []
+    for i, t in enumerate(text_per_page, start=1):
+        body = (t or "").strip() or "(no text on this page)"
+        figs = by_page.get(i, [])
+        if figs:
+            fig_lines = [
+                f"[Figure {f.page_num}.{f.fig_index}] {f.description}"
+                for f in figs
+            ]
+            body = body + "\n\n" + "\n".join(fig_lines)
+        chunks.append(f"### Page {i}\n{body}")
+    return "\n\n".join(chunks)
+
+
+# ---------------------------------------------------------------------------
+# read_segment helpers
+# ---------------------------------------------------------------------------
+
+def _clamp_pdf(
+    text: str, offset: int, max_chars: int,
+    *, extras: dict[str, Any] | None = None,
+) -> SegmentResult:
+    extras = dict(extras or {})
+    total = len(text)
+    chunk = text[offset: offset + max_chars]
+    truncated = (offset + len(chunk)) < total
+    extras.update({
+        "offset": offset,
+        "char_count": len(chunk),
+        "total_chars": total,
+        "truncated": truncated,
+    })
+    if truncated:
+        extras["next_offset"] = offset + len(chunk)
+    if not chunk:
+        return SegmentResult(text="", error="empty result", extras=extras)
+    return SegmentResult(text=chunk, extras=extras)
+
+
+def _pdf_pattern_search(
+    *, pages: list[str], pattern: str,
+    context_lines: int, max_matches: int,
+) -> SegmentResult:
+    try:
+        rx = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+    except re.error as exc:
+        return SegmentResult(error=f"invalid regex: {exc}")
+
+    hits: list[dict[str, Any]] = []
+    for page_no, page_text in enumerate(pages, start=1):
+        if not page_text:
+            continue
+        page_lines = page_text.splitlines()
+        for m in rx.finditer(page_text):
+            if len(hits) >= max_matches:
+                break
+            line_no = page_text.count("\n", 0, m.start()) + 1
+            s = max(0, line_no - 1 - context_lines)
+            e = min(len(page_lines), line_no + context_lines)
+            hits.append({
+                "page": page_no,
+                "line": line_no,
+                "match": m.group(0)[:200],
+                "context": "\n".join(page_lines[s:e]),
+            })
+        if len(hits) >= max_matches:
+            break
+
+    if not hits:
+        return SegmentResult(
+            text="", error="no matches",
+            extras={"pattern": pattern, "total_pages": len(pages)},
+        )
+
+    rendered = "\n\n".join(
+        f"[Page {h['page']} L{h['line']}] {h['match']}\n  ┊ {h['context']}"
+        for h in hits
+    )
+    return SegmentResult(
+        text=rendered,
+        extras={
+            "pattern": pattern,
+            "match_count": len(hits),
+            "hits": hits,
+            "total_pages": len(pages),
+        },
+    )
