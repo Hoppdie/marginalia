@@ -14,7 +14,15 @@ from pathlib import Path
 from typing import Awaitable, Callable, MutableMapping
 
 from marginalia.cli.client import CliHttpError, MarginaliaClient
-from marginalia.cli.render import Spinner, print_markdown, render_markdown
+from marginalia.cli.render import (
+    CYAN,
+    DIM,
+    RESET,
+    Spinner,
+    print_markdown,
+    render_markdown,
+    short_duration,
+)
 
 
 @dataclass
@@ -147,6 +155,50 @@ async def cmd_cd(ctx: CliContext, args: str) -> None:
         target = target + "/"
     ctx.cwd_remote = target
     print(f"cwd: {ctx.cwd_remote}")
+
+
+@command("background")
+async def cmd_background(ctx: CliContext, args: str) -> None:
+    """List running and pending background tasks (ingest / reflect / tend / etc.)."""
+    try:
+        snap = await ctx.client.list_active_tasks(limit=30)
+    except Exception as e:  # noqa: BLE001
+        print(f"  (background query failed: {e})")
+        return
+    running = snap.get("running") or []
+    pending = snap.get("pending") or []
+    if not running and not pending:
+        print("  idle (nothing on the queue)")
+        return
+
+    def _line(row: dict) -> str:
+        kind = row.get("kind", "?")
+        label = row.get("label") or ""
+        age = int(row.get("age_s") or 0)
+        attempts = int(row.get("attempts") or 0)
+        age_str = short_duration(age)
+        bits = [kind]
+        if label:
+            bits.append(label)
+        bits.append(age_str)
+        if attempts > 1:
+            bits.append(f"retry {attempts}")
+        return "  " + "  ".join(bits)
+
+    if running:
+        print(f"  {len(running)} running:")
+        for row in running:
+            print(_line(row))
+    if pending:
+        print(f"  {len(pending)} pending:")
+        for row in pending:
+            print(_line(row))
+
+
+@command("bg")
+async def cmd_bg(ctx: CliContext, args: str) -> None:
+    """Alias for /background."""
+    await cmd_background(ctx, args)
 
 
 @command("ls")
@@ -601,22 +653,21 @@ def _print_tend_status(status: dict) -> None:
 # ---- chat fallback --------------------------------------------------------
 
 _TOOL_LABELS = {
-    "list_catalogs": "浏览目录",
-    "read_catalog": "读取目录",
-    "resolve_tag": "解析标签",
-    "materialize_view": "实体化视图",
-    "search_metadata": "检索元数据",
-    "read_entries_metadata": "读取条目元数据",
-    "read_files": "阅读原文",
-    "search_journal": "翻阅日志",
+    "list_catalogs": "list_catalogs",
+    "read_catalog": "read_catalog",
+    "resolve_tag": "resolve_tag",
+    "materialize_view": "materialize_view",
+    "search_metadata": "search_metadata",
+    "read_entries_metadata": "read_entries_metadata",
+    "read_files": "read_files",
+    "search_journal": "search_journal",
 }
 
 
 def _format_tool_call(name: str, arguments: dict) -> str:
     label = _TOOL_LABELS.get(name, name)
     if not arguments:
-        return f"调用 {label}"
-    # one-line preview: "name(k=v, k=v)" truncated
+        return f"calling {label}"
     parts = []
     for k, v in arguments.items():
         s = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
@@ -626,17 +677,61 @@ def _format_tool_call(name: str, arguments: dict) -> str:
     inner = ", ".join(parts)
     if len(inner) > 60:
         inner = inner[:57] + "..."
-    return f"调用 {label}({inner})"
+    return f"calling {label}({inner})"
+
+
+def _fmt_tokens(n: int) -> str:
+    if n < 1000:
+        return str(n)
+    return f"{n / 1000:.1f}k"
+
+
+def _format_metrics(done_payload: dict, tool_count: int) -> str:
+    """Claude-Code-style trailing line: (1m 54s · ↑ 2.9k / ↓ 2.9k tokens · 87% cache  · 2 tools)."""
+    duration_ms = int(done_payload.get("duration_ms", 0) or 0)
+    tokens_in = int(done_payload.get("tokens_in", 0) or 0)
+    tokens_out = int(done_payload.get("tokens_out", 0) or 0)
+    cache_read = int(done_payload.get("cache_read", 0) or 0)
+    tools = int(done_payload.get("tool_calls", tool_count) or 0)
+
+    parts = [short_duration(duration_ms / 1000.0)]
+    parts.append(f"↑ {_fmt_tokens(tokens_in)} / ↓ {_fmt_tokens(tokens_out)} tokens")
+    if cache_read and tokens_in:
+        pct = round(cache_read / tokens_in * 100)
+        parts.append(f"{pct}% cache")
+    parts.append(f"{tools} tools")
+    return "(" + " · ".join(parts) + ")"
 
 
 async def chat(ctx: CliContext, message: str) -> None:
-    """Forward a non-slash message to the agent and render the SSE stream."""
+    """Forward a non-slash message to the agent and render the SSE stream.
+
+    Each phase commits its own line as it finishes, so the screen builds up
+    a stable history (no in-place rewrites between phases):
+
+        ⠋ planning the investigation...
+            ⠋ calling search_journal(q="raft consensus")
+            ⠋ calling read_files(entry_id=...)
+            ⠋ investigator thinking...
+            ✓ answer ready
+        <answer markdown>
+        (1m 54s · ↑ 2.9k / ↓ 2.9k tokens · 87% cache · 2 tools)
+    """
     if ctx.session_id is None:
         out = await ctx.client.create_session(initiating_user_message=message)
         ctx.session_id = out["session_id"]
         print(f"(opened session {ctx.session_id})")
 
-    sp = Spinner("调查员准备中...").start()
+    # kb-lite-style flat layout: one indent column for every step, dim-grey
+    # commit lines (no markers) so the trail reads like quiet log output.
+    sp: Spinner | None = Spinner("planning the investigation...").start()
+
+    def _swap(label: str) -> None:
+        nonlocal sp
+        if sp is not None:
+            sp.finish()
+        sp = Spinner(label).start()
+
     conversation_id: str | None = None
     plan_text: str = ""
     answer: str = ""
@@ -649,44 +744,56 @@ async def chat(ctx: CliContext, message: str) -> None:
             if ev.event_type == "conversation":
                 conversation_id = ev.data
             elif ev.event_type == "planning":
-                sp.update("制定调查计划...")
+                pass
             elif ev.event_type == "plan":
                 plan_text = ev.data
-                sp.finish("计划已就绪")
+                # NO_PLAN fast-path: planner declared this turn trivial. Keep
+                # the running spinner; the next event is `answer` which we
+                # commit at the end. No verbose plan dump.
+                if plan_text.lstrip().startswith("NO_PLAN:"):
+                    if sp is not None:
+                        sp.update("answering...")
+                    continue
+                if sp is not None:
+                    sp.finish("planning ready")
                 if plan_text.strip():
                     print()
-                    print_markdown(plan_text)
+                    print(f"  {CYAN}Plan:{RESET}")
+                    for ln in plan_text.strip().split("\n"):
+                        print(f"    {DIM}{ln}{RESET}")
                     print()
-                sp = Spinner("调查员开始工作...").start()
+                sp = Spinner("investigator working...").start()
             elif ev.event_type == "thinking":
-                sp.update("调查员思考中...")
+                _swap("investigator thinking...")
             elif ev.event_type == "tool_call":
                 tool_count += 1
                 try:
                     payload = json.loads(ev.data)
                 except (ValueError, TypeError):
                     payload = {}
-                sp.update(_format_tool_call(
+                _swap(_format_tool_call(
                     payload.get("name", "?"),
                     payload.get("arguments") or {},
                 ))
             elif ev.event_type == "tool_result":
-                # keep label briefly; next thinking/tool_call event will replace it
+                # Tool spinner stays open until the next phase event commits
+                # it. Surface failure inline so the cause is visible.
                 try:
                     payload = json.loads(ev.data)
                 except (ValueError, TypeError):
                     payload = {}
-                if not payload.get("ok", True):
-                    sp.update(f"工具失败: {payload.get('error', '')[:40]}")
+                if not payload.get("ok", True) and sp is not None:
+                    sp.fail(f"tool failed: {payload.get('error', '')[:40]}")
+                    sp = None
             elif ev.event_type == "user_artifact":
                 try:
                     art = json.loads(ev.data)
                 except (ValueError, TypeError):
                     art = {}
                 p = art.get("payload") or {}
-                if p.get("kind") == "vega_lite":
+                if p.get("kind") == "vega_lite" and sp is not None:
                     sp.update(
-                        f"图表已生成: {p.get('chart_id', '?')} - "
+                        f"chart ready: {p.get('chart_id', '?')} - "
                         f"{(p.get('caption') or '')[:40]}"
                     )
             elif ev.event_type == "answer":
@@ -699,27 +806,27 @@ async def chat(ctx: CliContext, message: str) -> None:
                 except (ValueError, TypeError):
                     done_payload = {}
     except CliHttpError as e:
-        sp.fail(f"HTTP {e.status}")
+        if sp is not None:
+            sp.fail(f"HTTP {e.status}")
         print(f"chat failed: {e.payload}")
         return
 
     if error_msg is not None:
-        sp.fail(error_msg)
+        if sp is not None:
+            sp.fail(error_msg)
         return
 
-    sp.finish("回答已就绪")
+    if sp is not None:
+        sp.finish("answer ready")
     print()
-    print_markdown(answer)
+    for ln in render_markdown(answer).split("\n"):
+        print(f"    {ln}" if ln else "")
     print()
     truncated = bool(done_payload.get("truncated"))
-    print(
-        f"  [tokens in={done_payload.get('tokens_in', 0)} "
-        f"out={done_payload.get('tokens_out', 0)} "
-        f"tools={done_payload.get('tool_calls', tool_count)} "
-        f"llm_calls={done_payload.get('llm_calls', 0)} "
-        f"{done_payload.get('duration_ms', 0)}ms]"
-        + ("  ⚠ truncated" if truncated else "")
-    )
+    metrics = _format_metrics(done_payload, tool_count)
+    suffix = "  ⚠ truncated" if truncated else ""
+    print(f"  {DIM}{metrics}{RESET}{suffix}")
+    print()
     if conversation_id:
         ctx.history.append({
             "user": message,

@@ -65,6 +65,14 @@ class MarginaliaClient:
         r.raise_for_status()
         return r.json()
 
+    async def list_active_tasks(self, limit: int = 30) -> dict[str, list[dict]]:
+        """Snapshot of running + pending tasks (kind / label / age). Used by
+        the `/background` REPL command so users can see what the worker is
+        actually doing rather than just a count."""
+        r = await self._http.get("/v1/tasks/active", params={"limit": limit})
+        r.raise_for_status()
+        return r.json()
+
     async def tend_start(self) -> dict[str, Any]:
         """Kick off a maintenance pass. Returns {tend_run_id, tasks: [...]}."""
         r = await self._http.post("/v1/tend")

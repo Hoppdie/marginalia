@@ -38,8 +38,9 @@ from marginalia.cli.commands import (
     dispatch,
     list_commands,
 )
+from marginalia.cli.render import GREEN, RESET
 
-PROMPT = "marginalia> "
+PROMPT = f"{GREEN}>{RESET} "
 HISTORY_PATH = Path.home() / ".marginalia_history"
 EMBEDDED_BASE_URL = "http://embedded"
 EMBEDDED_MARKER = "embedded"
@@ -47,24 +48,13 @@ ENV_SERVER = "MARGINALIA_SERVER"
 
 
 def _build_prompt(ctx: CliContext, *, pending: int = 0) -> str:
-    """Compose the REPL prompt: `marginalia[<backend> <cwd> • N busy]>`.
+    """Compose the REPL prompt — a green `>` and nothing else.
 
-    Dropped when state is uninteresting (no backend known, cwd is "/",
-    no pending tasks) so a fresh REPL still looks like the old prompt.
-    Pending count is queried once per prompt-cycle (not per keystroke).
+    Backend / cwd / busy-count used to be inlined here; they cluttered the
+    line and froze the screen rhythm. Use `/busy` and `/cd` to query that
+    state on demand instead.
     """
-    backend = ctx.storage_backend
-    cwd = ctx.cwd_remote or "/"
-    pieces: list[str] = []
-    if backend and backend != "?":
-        pieces.append(backend)
-    if cwd and cwd != "/":
-        pieces.append(cwd)
-    if pending:
-        pieces.append(f"{pending} busy")
-    if not pieces:
-        return "marginalia> "
-    return f"marginalia[{' • '.join(pieces)}]> "
+    return PROMPT
 
 
 def _print_banner(ctx: CliContext, mode: str) -> None:
@@ -159,6 +149,7 @@ def _build_pt_session(prompt_fn, ctx: CliContext | None = None):
     already encountered.
     """
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import ANSI
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
 
@@ -177,11 +168,11 @@ def _build_pt_session(prompt_fn, ctx: CliContext | None = None):
         history_path = None  # fall back to in-memory
 
     return PromptSession(
-        message=prompt_fn,
+        message=lambda: ANSI(prompt_fn()),
         completer=_make_slash_completer(ctx),
         history=FileHistory(str(history_path)) if history_path else None,
         key_bindings=bindings,
-        complete_while_typing=False,
+        complete_while_typing=True,
     )
 
 
@@ -358,6 +349,10 @@ async def run_repl(
                     break
 
             try:
+                # Buffer the user's input from subsequent output (session
+                # creation, spinner, answer) — gives every turn a clean
+                # opening line.
+                print()
                 await dispatch(ctx, line)
             except _ExitREPL:
                 break

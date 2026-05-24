@@ -47,12 +47,47 @@ CLEAR_LINE = "\x1b[2K"
 CR = "\r"
 
 
+def _osc8(text: str, url: str) -> str:
+    """OSC-8 hyperlink. Falls back to plain underline + dim url when colour
+    is unsupported."""
+    if not _COLOR:
+        return text + " (" + url + ")"
+    return f"\x1b]8;;{url}\x1b\\{UNDER}{text}{RESET}\x1b]8;;\x1b\\"
+
+
+def _enable_windows_vt() -> bool:
+    """Flip on ENABLE_VIRTUAL_TERMINAL_PROCESSING for both stdout and stderr
+    consoles. No-op (returns True) on non-Windows. Returns False if the call
+    fails — caller falls back to plain text."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # GetStdHandle: -11 = STD_OUTPUT_HANDLE, -12 = STD_ERROR_HANDLE
+        for std_id in (-11, -12):
+            handle = kernel32.GetStdHandle(std_id)
+            if handle in (0, -1):
+                continue
+            mode = ctypes.c_uint32()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                continue
+            # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        return True
+    except Exception:
+        return False
+
+
 def _supports_color() -> bool:
     if "NO_COLOR" in os.environ:
         return False
     if not sys.stdout.isatty():
         return False
     if os.environ.get("TERM", "") == "dumb":
+        return False
+    if not _enable_windows_vt():
         return False
     return True
 
@@ -72,16 +107,21 @@ _INLINE_CODE = re.compile(r"`([^`]+)`")
 _BOLD = re.compile(r"\*\*([^*]+)\*\*|__([^_]+)__")
 _ITALIC = re.compile(r"(?<![*\w])\*([^*]+)\*(?!\w)|(?<![_\w])_([^_]+)_(?!\w)")
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_FOOTNOTE_REF = re.compile(r"\[\^([^\]]+)\]")
+_FOOTNOTE_DEF = re.compile(r"^(\[\^[^\]]+\]:)\s*(.*)$")
 
 
 def _render_inline(text: str) -> str:
-    text = _INLINE_CODE.sub(lambda m: _wrap(m.group(1), CYAN), text)
+    # link first — later passes inject ANSI '[' bytes that confuse _LINK.
+    text = _LINK.sub(lambda m: _osc8(m.group(1), m.group(2)), text)
+    # footnote refs render as a small blue-bold tag, distinct from a bare
+    # `[a]` literal so the eye picks them up as citation markers.
+    text = _FOOTNOTE_REF.sub(
+        lambda m: _wrap(f"[^{m.group(1)}]", BLUE, BOLD), text,
+    )
+    text = _INLINE_CODE.sub(lambda m: _wrap(m.group(1), BLUE), text)
     text = _BOLD.sub(lambda m: _wrap(m.group(1) or m.group(2), BOLD), text)
     text = _ITALIC.sub(lambda m: _wrap(m.group(1) or m.group(2), ITALIC), text)
-    text = _LINK.sub(
-        lambda m: _wrap(m.group(1), UNDER) + " " + _wrap(f"({m.group(2)})", DIM),
-        text,
-    )
     return text
 
 
@@ -95,74 +135,120 @@ _BLOCKQUOTE = re.compile(r"^>\s?(.*)$")
 
 def render_markdown(md: str) -> str:
     """Return an ANSI-coloured rendering of `md`. Always returns a string;
-    when colour is unsupported the markup is stripped to plain text."""
-    out: list[str] = []
+    when colour is unsupported the markup is stripped to plain text.
+
+    Blocks (heading / paragraph / code-fence / blockquote / list / table /
+    hr) are separated by a single blank line — runs of list items or
+    blockquote lines stay tight."""
+    blocks: list[list[str]] = []
+    cur: list[str] = []
+    last_kind: str | None = None
+
+    def _flush(kind: str | None) -> None:
+        nonlocal cur, last_kind
+        if cur:
+            blocks.append(cur)
+            cur = []
+        last_kind = kind
+
     in_fence = False
-    fence_lang: str | None = None
     table_buf: list[str] = []
-    raw_iter = iter(md.splitlines())
-    for raw in raw_iter:
+
+    for raw in md.splitlines():
         if in_fence:
             if _FENCE.match(raw):
                 in_fence = False
-                fence_lang = None
                 continue
-            out.append(_wrap("    " + raw, DIM_GREY))
+            cur.append(_wrap("    " + raw, DIM_GREY))
             continue
 
         m = _FENCE.match(raw)
         if m:
+            if last_kind != "code":
+                _flush("code")
             in_fence = True
-            fence_lang = m.group(1) or None
-            if fence_lang:
-                out.append(_wrap(f"  ┄ {fence_lang}", DIM))
+            lang = m.group(1) or None
+            if lang:
+                cur.append(_wrap(f"    {lang}", DIM))
+            last_kind = "code"
             continue
 
-        # detect markdown table block: line starts with `|` and we can read a
-        # contiguous run of `|`-prefixed lines.
         if _looks_like_table_row(raw):
             table_buf.append(raw)
             continue
         elif table_buf:
-            # flush accumulated table
-            out.append(render_table(table_buf))
+            _flush("table")
+            cur.append(render_table(table_buf))
             table_buf.clear()
-            # fall through to handle current `raw` normally
+            _flush("table")
 
         m = _HEADING.match(raw)
         if m:
+            _flush("heading")
             level = len(m.group(1))
             title = m.group(2)
             if level == 1:
-                rendered = _wrap(f" {title} ", REV, BOLD)
-            elif level == 2:
-                rendered = _wrap(f" {title} ", REV)
+                cur.append(_wrap(title, BOLD, ITALIC, UNDER))
             else:
-                rendered = _wrap(title, BOLD)
-            out.append("")
-            out.append(rendered)
+                cur.append(_wrap(title, BOLD))
+            _flush("heading")
             continue
 
         m = _BLOCKQUOTE.match(raw)
         if m:
+            if last_kind != "quote":
+                _flush("quote")
             inner = _render_inline(m.group(1))
-            out.append(_wrap("│ ", DIM_GREY) + inner)
+            cur.append(_wrap("│", DIM_GREY) + " " + _wrap(inner, ITALIC))
+            last_kind = "quote"
+            continue
+
+        m = _FOOTNOTE_DEF.match(raw)
+        if m:
+            if last_kind != "footnote":
+                _flush("footnote")
+            marker = _wrap(m.group(1), BLUE, BOLD)
+            body = _wrap(_render_inline(m.group(2)), DIM)
+            cur.append(marker + " " + body)
+            last_kind = "footnote"
             continue
 
         if _HR.match(raw):
-            out.append(_wrap("────────────────────────────────────────", DIM_GREY))
+            _flush("hr")
+            cur.append("---")
+            _flush("hr")
             continue
 
         if not raw.strip():
-            out.append("")
+            _flush(None)
             continue
 
-        out.append(_render_inline(raw))
+        # list item: keep adjacent items in the same block (no gap between).
+        stripped = raw.lstrip()
+        is_list = (
+            stripped.startswith(("- ", "* ", "+ "))
+            or bool(re.match(r"^\d+\.\s", stripped))
+        )
+        if is_list:
+            if last_kind != "list":
+                _flush("list")
+            cur.append(_render_inline(raw))
+            last_kind = "list"
+            continue
+
+        # paragraph: flush if previous was a different block.
+        if last_kind not in (None, "para"):
+            _flush("para")
+        cur.append(_render_inline(raw))
+        last_kind = "para"
 
     if table_buf:
-        out.append(render_table(table_buf))
+        _flush("table")
+        cur.append(render_table(table_buf))
+        table_buf.clear()
+    _flush(None)
 
-    return "\n".join(out)
+    return "\n\n".join("\n".join(b) for b in blocks)
 
 
 def print_markdown(md: str) -> None:
@@ -190,10 +276,8 @@ def _split_row(line: str) -> list[str]:
 
 
 def render_table(rows: list[str]) -> str:
-    """Render markdown table lines as aligned columns with dim borders.
-
-    The second row (if a `--- | --- | ---` separator) is consumed as the
-    header rule but not emitted; the first row becomes a bold header."""
+    """Render markdown table lines with `|` column separators and a `-`
+    header rule. No outer frame — matches Claude Code's `applyMarkdown`."""
     if not rows:
         return ""
     parsed: list[list[str]] = []
@@ -213,7 +297,6 @@ def render_table(rows: list[str]) -> str:
         max(_visible_len(r[c]) for r in parsed)
         for c in range(n_cols)
     ]
-    sep = _wrap("│", DIM_GREY)
 
     def _fmt_row(cells: list[str], *, bold: bool = False) -> str:
         formatted: list[str] = []
@@ -223,17 +306,14 @@ def render_table(rows: list[str]) -> str:
             if bold:
                 inner = _wrap(inner, BOLD)
             formatted.append(" " + inner + " ")
-        return sep + sep.join(formatted) + sep
+        return "|" + "|".join(formatted) + "|"
 
-    border_chars = "─" * (sum(widths) + n_cols * 3 + 1)
-    border = _wrap(border_chars, DIM_GREY)
-
-    out_lines = [border]
+    out_lines: list[str] = []
     for i, row in enumerate(parsed):
         out_lines.append(_fmt_row(row, bold=(has_header and i == 0)))
         if has_header and i == 0:
-            out_lines.append(border)
-    out_lines.append(border)
+            sep_cells = ["-" * (w + 2) for w in widths]
+            out_lines.append("|" + "|".join(sep_cells) + "|")
     return "\n".join(out_lines)
 
 
@@ -250,27 +330,45 @@ def _visible_len(s: str) -> int:
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
+def short_duration(seconds: float) -> str:
+    """Short human duration: `Nms` / `X.Ys` / `XmYs` / `XhYm`."""
+    if seconds < 1:
+        return f"{int(seconds * 1000)}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m = int(seconds // 60)
+    s = int(seconds - m * 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h = m // 60
+    m = m % 60
+    return f"{h}h {m}m"
+
+
 class Spinner:
-    """A simple animated spinner for "agent is working" indication.
+    """Animates one indented step line, kb-lite style.
 
-    Use as a context manager:
-        with Spinner("调用 search_journal..."):
-            await tool.handler(...)
+    Render pattern:
+      while running:   `  ⠋ <label>  3.1s`        (BLUE spinner + DIM elapsed)
+      after finish():  `  -> <label>  3.1s`       (whole line DIM, kept in scrollback)
+      after fail():    `  ✗  <label>  3.1s`        (RED marker, message kept)
 
-    Or manually:
-        sp = Spinner("...").start()
-        sp.update("changed label")
-        sp.finish("done")           # green ✓
-        sp.fail("error message")    # red ✗
+    A single fixed indent (default 2 spaces) is used for every step so the
+    column stays aligned regardless of phase. `update()` swaps the label
+    in place; `finish()` / `fail()` commit the line and emit a newline so
+    the next step starts below.
 
-    No-op when stdout is not a TTY (so piped output stays clean).
+    No-op when stdout is not a TTY so piped output stays clean.
     """
 
-    def __init__(self, label: str = "") -> None:
+    def __init__(self, label: str = "", indent: int = 2) -> None:
         self._label = label
+        self._indent = " " * indent
         self._frames = itertools.cycle(SPINNER_FRAMES)
         self._stop_event: threading.Event | None = None
         self._thread: threading.Thread | None = None
+        self._t0 = time.monotonic()
+        self._committed = False
         self._enabled = (
             sys.stdout.isatty()
             and "NO_COLOR" not in os.environ
@@ -291,7 +389,11 @@ class Spinner:
     def _run(self) -> None:
         while self._stop_event is not None and not self._stop_event.is_set():
             frame = next(self._frames)
-            sys.stdout.write(f"{CR}{CLEAR_LINE}{BLUE}{frame} {self._label}{RESET}")
+            elapsed = short_duration(time.monotonic() - self._t0)
+            sys.stdout.write(
+                f"{CR}{CLEAR_LINE}{self._indent}{BLUE}{frame}{RESET} "
+                f"{self._label}  {DIM}{elapsed}{RESET}"
+            )
             sys.stdout.flush()
             time.sleep(0.08)
 
@@ -303,21 +405,33 @@ class Spinner:
         self._stop_event = None
         self._thread = None
 
-    def finish(self, label: str | None = None) -> None:
+    def _commit(self, marker: str, color: str | None, label: str | None) -> None:
+        if self._committed:
+            return
+        self._committed = True
         self._stop()
         if not self._enabled:
             return
         msg = label if label is not None else self._label
-        sys.stdout.write(f"{CR}{CLEAR_LINE}{GREEN}✓ {msg}{RESET}\n")
+        elapsed = short_duration(time.monotonic() - self._t0)
+        if color is None:
+            # kb-lite-style: whole line dimmed, no marker. The committed
+            # line is just the same indented label, dim, with the final
+            # elapsed appended — leaves a clean trail in scrollback.
+            line = f"{DIM}{self._indent}{msg}  {elapsed}{RESET}"
+        else:
+            line = (
+                f"{self._indent}{color}{marker}{RESET} {msg}  "
+                f"{DIM}{elapsed}{RESET}"
+            )
+        sys.stdout.write(f"{CR}{CLEAR_LINE}{line}\n")
         sys.stdout.flush()
 
+    def finish(self, label: str | None = None) -> None:
+        self._commit("✓", GREEN, label)
+
     def fail(self, label: str | None = None) -> None:
-        self._stop()
-        if not self._enabled:
-            return
-        msg = label if label is not None else self._label
-        sys.stdout.write(f"{CR}{CLEAR_LINE}{RED}✗ {msg}{RESET}\n")
-        sys.stdout.flush()
+        self._commit("✗", RED, label)
 
     def __enter__(self) -> "Spinner":
         return self.start()

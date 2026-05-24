@@ -122,6 +122,7 @@ class Conversation(Base, IdMixin):
     llm_calls: Mapped[Any] = mapped_column(JSON, nullable=False, default=list)
     total_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_cache_read: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_llm_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

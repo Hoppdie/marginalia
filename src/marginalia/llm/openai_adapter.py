@@ -3,8 +3,11 @@ Together, Groq, DeepSeek, local vllm/ollama, etc., via `base_url`).
 
 Notes:
   - OpenAI does its own automatic prefix caching when prompt > ~1024 tokens.
-    We don't need to mark cache breakpoints; we DO surface
-    `usage.prompt_tokens_details.cached_tokens` as `cache_read_tokens`.
+    We don't need to mark cache breakpoints; we DO surface cache hits as
+    `cache_read_tokens`. Field name varies by provider:
+      OpenAI            -> usage.prompt_tokens_details.cached_tokens
+      DeepSeek          -> usage.prompt_cache_hit_tokens (top-level, non-OpenAI)
+    The adapter reads DeepSeek's field first, falls back to OpenAI's.
   - OpenAI returns tool-call arguments as JSON STRINGS — we parse to dicts so
     callers see the same shape as Anthropic.
   - Structured output behaviour depends on provider:
@@ -206,9 +209,23 @@ class OpenAIChatClient(ChatClient):
         usage_obj = getattr(resp, "usage", None)
         cache_read = 0
         if usage_obj is not None:
-            details = getattr(usage_obj, "prompt_tokens_details", None)
-            if details is not None:
-                cache_read = getattr(details, "cached_tokens", 0) or 0
+            # DeepSeek surfaces cache hits as a top-level `prompt_cache_hit_tokens`
+            # (non-OpenAI extension). OpenAI uses prompt_tokens_details.cached_tokens.
+            # Try DeepSeek first since it's only set when present; fall back to OpenAI.
+            cache_read = getattr(usage_obj, "prompt_cache_hit_tokens", 0) or 0
+            if not cache_read:
+                details = getattr(usage_obj, "prompt_tokens_details", None)
+                if details is not None:
+                    cache_read = getattr(details, "cached_tokens", 0) or 0
+                else:
+                    # SDK may expose usage as a model_dump-style mapping when the
+                    # field isn't in the typed schema; reach in via __dict__/get.
+                    raw = getattr(usage_obj, "model_extra", None) or {}
+                    cache_read = (
+                        raw.get("prompt_cache_hit_tokens")
+                        or (raw.get("prompt_tokens_details") or {}).get("cached_tokens")
+                        or 0
+                    )
         usage = TokenUsage(
             input_tokens=getattr(usage_obj, "prompt_tokens", 0) or 0,
             output_tokens=getattr(usage_obj, "completion_tokens", 0) or 0,

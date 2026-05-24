@@ -23,7 +23,19 @@
       "Bash(git commit *)",
       "Bash(git push *)",
       "Bash(docker run *)",
-      "Bash(LLM_DEFAULT_API_KEY=sk-fake docker compose config)"
+      "Bash(LLM_DEFAULT_API_KEY=sk-fake docker compose config)",
+      "Bash(git mv *)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(ls E:\\\\Marginalia\\\\src\\\\marginalia\\\\repositories\\\\ *)",
+      "Bash(xargs wc -l)",
+      "Bash(PYTHONPATH=src .venv/Scripts/python *)",
+      "Bash(git rm *)",
+      "Bash(git stash *)",
+      "Bash(ls pyproject.toml setup.py)",
+      "Bash(head -20 pyproject.toml)",
+      "Bash(ls .venv)",
+      "Bash(ls venv *)",
+      "Bash(PYTHONPATH=src python *)"
     ]
   }
 }

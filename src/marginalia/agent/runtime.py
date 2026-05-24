@@ -235,6 +235,7 @@ async def run_turn(
         usage = TurnUsage(
             input_tokens=conv.total_input_tokens or 0,
             output_tokens=conv.total_output_tokens or 0,
+            cache_read_tokens=conv.total_cache_read or 0,
             tool_calls=conv.total_tool_calls or 0,
             llm_calls=conv.total_llm_calls or 0,
             duration_ms=conv.total_duration_ms or 0,
@@ -249,6 +250,7 @@ async def run_turn(
             "conversation_id": conversation_id,
             "tokens_in": usage.input_tokens,
             "tokens_out": usage.output_tokens,
+            "cache_read": usage.cache_read_tokens,
             "tool_calls": usage.tool_calls,
             "llm_calls": usage.llm_calls,
             "duration_ms": usage.duration_ms,
@@ -275,6 +277,19 @@ def _extract_no_plan_answer(plan_text: str) -> str | None:
     # Empty answer body is treated as a non-decision — fall back to execute
     # rather than returning a blank response to the user.
     return answer or None
+
+
+def _strip_leaked_no_plan(answer: str) -> str:
+    """Belt-and-suspenders for a model that mistakenly prefixes its
+    execute-phase final answer with the NO_PLAN: control marker. The marker
+    is plan-only — never user-visible — so we strip it here regardless of
+    what the model emitted."""
+    if not answer:
+        return answer
+    stripped = answer.lstrip()
+    if stripped.startswith(NO_PLAN_PREFIX):
+        return stripped[len(NO_PLAN_PREFIX):].lstrip()
+    return answer
 
 
 async def _run_plan_phase(
@@ -404,20 +419,20 @@ async def _run_execute_phase(
 
         last_text = resp.text or last_text
         if resp.stop_reason in ("end_turn", "stop_sequence"):
-            answer = resp.text or last_text or "(无回答)"
+            answer = _strip_leaked_no_plan(resp.text or last_text or "(无回答)")
             outcome.answer = answer
             yield AgentEvent(event_type="answer", data=answer)
             return
         if resp.stop_reason == "max_tokens":
             log.warning("execute turn %d hit max_tokens; treating as final", turn)
-            answer = resp.text or last_text or "(无回答)"
+            answer = _strip_leaked_no_plan(resp.text or last_text or "(无回答)")
             outcome.answer = answer
             yield AgentEvent(event_type="answer", data=answer)
             return
 
     log.warning("conversation %s hit MAX_EXECUTE_TURNS=%d", conversation_id,
                 MAX_EXECUTE_TURNS)
-    fallback = (
+    fallback = _strip_leaked_no_plan(
         last_text
         or "对不起——本轮调查超过了预算上限，没能给出完整回答。请把问题分小或换个角度再试。"
     )

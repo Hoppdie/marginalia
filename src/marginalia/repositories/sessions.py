@@ -140,6 +140,7 @@ async def start_conversation(
         llm_calls=[],
         total_input_tokens=0,
         total_output_tokens=0,
+        total_cache_read=0,
         total_tool_calls=0,
         total_llm_calls=0,
         total_duration_ms=0,
@@ -186,6 +187,7 @@ async def append_llm_call(
     conv.total_llm_calls = (conv.total_llm_calls or 0) + 1
     conv.total_input_tokens = (conv.total_input_tokens or 0) + input_tokens
     conv.total_output_tokens = (conv.total_output_tokens or 0) + output_tokens
+    conv.total_cache_read = (conv.total_cache_read or 0) + cache_read_tokens
     conv.total_duration_ms = (conv.total_duration_ms or 0) + duration_ms
 
 
@@ -244,6 +246,7 @@ async def close_session(
     s.turn_count = len(convs)
     s.total_input_tokens = sum(c.total_input_tokens or 0 for c in convs)
     s.total_output_tokens = sum(c.total_output_tokens or 0 for c in convs)
+    s.total_cache_read = sum(c.total_cache_read or 0 for c in convs)
     s.total_tool_calls = sum(c.total_tool_calls or 0 for c in convs)
     s.total_llm_calls = sum(c.total_llm_calls or 0 for c in convs)
     s.total_duration_ms = sum(c.total_duration_ms or 0 for c in convs)
