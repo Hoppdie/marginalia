@@ -65,6 +65,30 @@ class DocxPipeline(Pipeline):
         args: dict[str, Any],
         storage: StorageBackend,
     ) -> SegmentResult:
+        paragraphs = await self._extract_paragraphs(storage, file_row.storage_key)
+        return self._slice(paragraphs, args)
+
+    async def read_segment_from_bytes(
+        self,
+        body: bytes,
+        args: dict[str, Any],
+        *,
+        filename: str | None = None,
+    ) -> SegmentResult:
+        """Bytes-first variant — used by ArchivePipeline for member peeks."""
+        if len(body) > MAX_DOCX_BYTES:
+            return SegmentResult(
+                error=f"docx exceeds {MAX_DOCX_BYTES // (1024*1024)}MB cap",
+            )
+        try:
+            paragraphs = self._parse_paragraphs_from_bytes(body)
+        except Exception as exc:  # noqa: BLE001 — python-docx surfaces many
+            return SegmentResult(error=f"docx parse failed: {exc}")
+        return self._slice(paragraphs, args)
+
+    def _slice(
+        self, paragraphs: list[str], args: dict[str, Any],
+    ) -> SegmentResult:
         """Resolve args against this docx body.
 
         Field priority:
@@ -72,7 +96,6 @@ class DocxPipeline(Pipeline):
           2. paragraph_start/_end          → return paragraph range
           3. (default)                     → offset..offset+max_chars chunk
         """
-        paragraphs = await self._extract_paragraphs(storage, file_row.storage_key)
         body = "\n".join(paragraphs)
         total_paragraphs = len(paragraphs)
 
@@ -119,12 +142,13 @@ class DocxPipeline(Pipeline):
             extras={"total_paragraphs": total_paragraphs},
         )
 
-    @staticmethod
+    @classmethod
     async def _extract_paragraphs(
+        cls,
         storage: StorageBackend, key: str,
     ) -> list[str]:
         try:
-            from docx import Document  # type: ignore
+            from docx import Document  # type: ignore  # noqa: F401 — keeps import-error early
         except ImportError as exc:
             raise RuntimeError(
                 "docx pipeline needs python-docx; "
@@ -138,8 +162,18 @@ class DocxPipeline(Pipeline):
                 raise ValueError(
                     f"docx exceeds {MAX_DOCX_BYTES // (1024*1024)}MB cap"
                 )
+        return cls._parse_paragraphs_from_bytes(bytes(buf))
 
-        doc = Document(io.BytesIO(bytes(buf)))
+    @staticmethod
+    def _parse_paragraphs_from_bytes(body: bytes) -> list[str]:
+        try:
+            from docx import Document  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "docx pipeline needs python-docx; "
+                "`pip install python-docx`"
+            ) from exc
+        doc = Document(io.BytesIO(body))
         out: list[str] = []
         for block in _iter_block_items(doc):
             line = _render_block(block)

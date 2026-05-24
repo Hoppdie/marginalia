@@ -1,7 +1,8 @@
 """analyze_container — design.md §10.1.
 
-Lets the agent look INSIDE a container entry (zip / tar / git_repo)
-without ever materializing the inner files as standalone entries.
+Lets the agent look INSIDE a container entry (zip / tar / 7z / rar /
+.gz / etc.) without ever materializing the inner files as standalone
+entries.
 
 Three things the caller can do in one invocation (extraction is shared):
 
@@ -15,17 +16,14 @@ A `container_path` reference (used in citations) is just the inner path:
   [^a]: entry_id=<container>, container_path=src/auth/login.py, lines=42-58
   → caller resolves via this tool
 
-Safety: same extraction limits as ingest. Tempdir is created per call
-and cleaned up after the response is built.
+Safety: extraction limits and tempdir cleanup are owned by
+`storage.open_archive`. This tool is just routing on top.
 """
 from __future__ import annotations
 
 import fnmatch
 import logging
 import re
-import shutil
-import tempfile
-from pathlib import Path
 from typing import Any, Mapping
 
 from sqlalchemy import select
@@ -33,8 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.agent.tools import ToolContext, tool
 from marginalia.db.models import File, FileEntry
-from marginalia.pipelines.container_extract import extract
-from marginalia.storage import get_storage
+from marginalia.pipelines.archive import _is_listable
+from marginalia.storage import get_storage, open_archive
 
 log = logging.getLogger(__name__)
 
@@ -97,10 +95,11 @@ SCHEMA: dict[str, Any] = {
 @tool(
     name="analyze_container",
     description=(
-        "Inspect inside a container (zip / tar / git_repo) entry. Combine "
-        "list_files (glob), read_files (path + line ranges), and search "
-        "(substring or regex). Inner files are NEVER materialised as "
-        "standalone entries — references use container_path."
+        "Inspect inside a container entry (any archive shape: zip / tar / "
+        "7z / rar / .gz / etc.). Combine list_files (glob), read_files "
+        "(path + line ranges), and search (substring or regex). Inner "
+        "files are NEVER materialised as standalone entries — references "
+        "use container_path."
     ),
     schema=SCHEMA,
 )
@@ -133,34 +132,35 @@ async def analyze_container(
     async for chunk in storage.get(file_row.storage_key):
         body.extend(chunk)
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="marg-analyze-"))
-    try:
-        result = extract(bytes(body), extract_root=tmpdir)
+    filename = entry.display_name or "archive"
+    with open_archive(bytes(body), filename) as session:
+        # Filter out noise + git internals + path-traversal members so
+        # the agent works against the same listing the ingest pipeline
+        # produced.
+        unsafe = session.unsafe_basenames
+        visible = [
+            m for m in session.members if _is_listable(m.path, unsafe)
+        ]
         out: dict[str, Any] = {
-            "container_kind": result.container_kind,
             "display_name": entry.display_name,
-            "file_count": len(result.members),
+            "file_count": len(visible),
         }
-
         if "list_files" in args:
-            out["files"] = _do_list(result, args["list_files"] or {})
+            out["files"] = _do_list(visible, args["list_files"] or {})
         if "read_files" in args:
-            out["reads"] = _do_reads(tmpdir, result, args["read_files"] or [])
+            out["reads"] = _do_reads(session, visible, args["read_files"] or [])
         if "search" in args:
-            out["search"] = _do_search(tmpdir, result,
-                                       args["search"] or {})
+            out["search"] = _do_search(session, visible, args["search"] or {})
         return out
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---- list_files ------------------------------------------------------------
 
-def _do_list(result, params: Mapping[str, Any]) -> dict[str, Any]:
+def _do_list(members, params: Mapping[str, Any]) -> dict[str, Any]:
     glob_pat = params.get("glob")
     limit = min(int(params.get("limit") or 200), 1000)
     matches = []
-    for m in result.members:
+    for m in members:
         if glob_pat and not _glob_match(m.path, glob_pat):
             continue
         matches.append({"path": m.path, "size": m.size})
@@ -175,7 +175,6 @@ def _do_list(result, params: Mapping[str, Any]) -> dict[str, Any]:
 
 def _glob_match(path: str, pattern: str) -> bool:
     if "**" in pattern:
-        # convert ** → match any number of directories
         regex_pat = fnmatch.translate(pattern).replace(r"(?s:.*)", ".*")
         return re.match(regex_pat, path) is not None
     return fnmatch.fnmatch(path, pattern)
@@ -184,24 +183,24 @@ def _glob_match(path: str, pattern: str) -> bool:
 # ---- read_files ------------------------------------------------------------
 
 def _do_reads(
-    tmpdir: Path, result, requests: list[dict[str, Any]],
+    session, visible, requests: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    by_path = {m.path: m for m in result.members}
+    visible_paths = {m.path for m in visible}
     out: list[dict[str, Any]] = []
     for req in requests:
         path = req.get("path")
-        if not path or path not in by_path:
+        if not path or path not in visible_paths:
             out.append({"path": path, "error": "path not found in container"})
             continue
         try:
-            body = (tmpdir / path).read_bytes()
+            body = session.read_bytes(path)
         except Exception as exc:
             out.append({"path": path, "error": f"read failed: {exc!r}"})
             continue
         text = _decode(body)
         locs = req.get("locations") or [{"unit": "whole", "value": ""}]
         location_results = [_extract_location(text, loc) for loc in locs]
-        out.append({"path": path, "size": by_path[path].size,
+        out.append({"path": path, "size": session.get(path).size,
                     "locations": location_results})
     return out
 
@@ -236,7 +235,7 @@ def _extract_location(text: str, loc: Mapping[str, Any]) -> dict[str, Any]:
 # ---- search ----------------------------------------------------------------
 
 def _do_search(
-    tmpdir: Path, result, params: Mapping[str, Any],
+    session, visible, params: Mapping[str, Any],
 ) -> dict[str, Any]:
     pattern = (params.get("pattern") or "").strip()
     if not pattern:
@@ -253,11 +252,11 @@ def _do_search(
         pat = re.compile(re.escape(pattern), re.IGNORECASE)
 
     hits: list[dict[str, Any]] = []
-    for m in result.members:
+    for m in visible:
         if len(hits) >= max_hits:
             break
         try:
-            body = (tmpdir / m.path).read_bytes()
+            body = session.read_bytes(m.path)
         except Exception:
             continue
         text = _decode(body)

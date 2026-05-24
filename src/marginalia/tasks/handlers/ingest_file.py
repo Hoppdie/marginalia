@@ -122,11 +122,15 @@ async def handle_ingest_file(payload: Mapping[str, Any]) -> None:
             size=snapshot_size,
             mime=snapshot_mime,
             ext=snapshot_ext,
+            display_name=entry.display_name,
         )
         entry_id = entry.id
+        snapshot_filename = entry.display_name
         await session.commit()
 
-    pipeline = resolve_pipeline(snapshot_mime, snapshot_ext)
+    pipeline = resolve_pipeline(
+        snapshot_mime, snapshot_ext, filename=snapshot_filename,
+    )
     if pipeline is None:
         await _mark_failed(file_id, reason="no_pipeline_for_mime_or_ext")
         raise ValueError(f"no pipeline for mime={snapshot_mime!r} ext={snapshot_ext!r}")
@@ -171,6 +175,7 @@ async def _build_context(
     size: int,
     mime: str | None,
     ext: str | None,
+    display_name: str | None = None,
 ) -> PipelineContext:
     folder_path = await _resolve_folder_path(session, entry.folder_id)
     siblings = (
@@ -217,6 +222,7 @@ async def _build_context(
         original_ext=ext,
         folder_path=folder_path,
         sibling_names=list(siblings),
+        display_name=display_name,
         catalog_sketch=catalog_sketch,
         tag_vocabulary=tag_vocabulary,
     )

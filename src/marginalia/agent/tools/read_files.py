@@ -148,7 +148,10 @@ async def read_files(
             })
             continue
 
-        pipeline = resolve_pipeline(file_row.mime_type, file_row.original_ext)
+        pipeline = resolve_pipeline(
+            file_row.mime_type, file_row.original_ext,
+            filename=entry.display_name,
+        )
         if pipeline is None:
             results.append({
                 "ok": False, "entry_id": eid,

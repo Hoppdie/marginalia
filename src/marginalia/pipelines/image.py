@@ -7,10 +7,18 @@ provider's native shape (OpenAI: data: URL; Anthropic: base64 source).
 
 Single LLM call producing structured JSON: a description of the image's
 content, key regions / objects, suggested catalog placement, and tags.
+
+Before any image hits the VLM we down-scale to `VLM_MAX_LONG_EDGE` on
+the long edge (Anthropic vision sweet spot — clear without burning
+tokens) and re-encode as JPEG quality 85. Already-small images pass
+through unchanged. This keeps screenshots and chat captures readable
+(14px font @1568 long edge ≈ 11px after rescale, comfortably above the
+~10px VLM threshold) without making 4K screen captures expensive.
 """
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 from typing import Any
@@ -35,14 +43,51 @@ from marginalia.storage.base import StorageBackend
 log = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB cap (most VLMs reject larger)
+VLM_MAX_LONG_EDGE = 1568            # Anthropic vision sweet spot
+VLM_JPEG_QUALITY = 85
 
-_MIME_TO_LITERAL = {
-    "image/png": "image/png",
-    "image/jpeg": "image/jpeg",
-    "image/jpg": "image/jpeg",
-    "image/gif": "image/gif",
-    "image/webp": "image/webp",
-}
+
+def downscale_for_vlm(
+    body: bytes,
+    *,
+    max_long_edge: int = VLM_MAX_LONG_EDGE,
+) -> tuple[bytes, str]:
+    """Return (jpeg_bytes, 'image/jpeg') after down-scaling to fit
+    `max_long_edge`. Already-small images are re-encoded as JPEG too —
+    this gives a single, predictable shape going to every VLM provider
+    (PNG → JPEG saves ~3-5x on screenshots) at the cost of one Pillow
+    round-trip when the image is already within bounds.
+
+    On any Pillow failure (corrupt input, exotic format) returns the
+    original bytes + image/png as a best-effort fallback.
+    """
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError:
+        return body, "image/png"
+    try:
+        img = Image.open(io.BytesIO(body))
+        img.load()
+    except Exception:  # noqa: BLE001 — Pillow surfaces many error types
+        return body, "image/png"
+
+    # Drop alpha to keep JPEG happy.
+    if img.mode in ("RGBA", "LA", "P"):
+        background = Image.new("RGB", img.size, (255, 255, 255))
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        background.paste(img, mask=img.split()[-1] if "A" in img.mode else None)
+        img = background
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    longest = max(img.size)
+    if longest > max_long_edge:
+        img.thumbnail((max_long_edge, max_long_edge), Image.LANCZOS)
+
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=VLM_JPEG_QUALITY, optimize=True)
+    return out.getvalue(), "image/jpeg"
 
 
 IMAGE_PIPELINE_SYSTEM = """You are Marginalia's image indexer.
@@ -141,10 +186,8 @@ class ImagePipeline(Pipeline):
         storage: StorageBackend,
     ) -> PipelineResult:
         body = await self._read_bytes(storage, ctx.storage_key)
-        media_type = _MIME_TO_LITERAL.get(
-            (ctx.mime_type or "").lower(), "image/png",
-        )
-        b64 = base64.b64encode(body).decode("ascii")
+        scaled, media_type = downscale_for_vlm(body)
+        b64 = base64.b64encode(scaled).decode("ascii")
 
         user_text = (
             "Index the image below. Hints are advisory; the image's actual "
@@ -228,6 +271,55 @@ class ImagePipeline(Pipeline):
         if not chunk:
             return SegmentResult(text="", error="empty result", extras=extras)
         return SegmentResult(text=chunk, extras=extras)
+
+    async def read_segment_from_bytes(
+        self,
+        body: bytes,
+        args: dict[str, Any],
+        *,
+        filename: str | None = None,
+    ) -> SegmentResult:
+        """Bytes-first variant — used by ArchivePipeline when the agent
+        drills into an image member that has no persisted description.
+        Down-scales and asks the VLM for a short caption (1-2 sentences),
+        cheaper than re-running the full ingest schema.
+
+        Archive ingest itself does NOT call this — see ArchivePipeline,
+        which substitutes a structural placeholder for image members so
+        archives don't blow up VLM cost.
+        """
+        scaled, media_type = downscale_for_vlm(body)
+        b64 = base64.b64encode(scaled).decode("ascii")
+        client = get_chat_client("vision")
+        prompt = (
+            f"Describe the image below in 1-2 sentences. "
+            f"Filename: {filename or 'unknown'}."
+        )
+        try:
+            resp = await client.complete(ChatRequest(
+                system="You describe images concisely. Output one short paragraph, no preamble.",
+                messages=[ChatMessage(role="user", content=[
+                    TextBlock(text=prompt),
+                    ImageBlock(media_type=media_type, data_b64=b64),
+                ])],
+                max_tokens=300,
+                temperature=0.2,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            return SegmentResult(
+                error=f"VLM describe failed: {exc}",
+                extras={"kind": "image", "filename": filename, "bytes": len(body)},
+            )
+        text = (resp.text or "").strip()
+        return SegmentResult(
+            text=text or f"[image: {filename or 'unknown'}, ~{max(1, len(body) // 1024)} KB]",
+            extras={
+                "kind": "image",
+                "filename": filename,
+                "bytes": len(body),
+                "scaled_bytes": len(scaled),
+            },
+        )
 
 
 def _render_image_description(file_row: Any) -> str:

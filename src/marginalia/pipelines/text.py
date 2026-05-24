@@ -210,6 +210,34 @@ class TextPipeline(Pipeline):
         args: dict[str, Any],
         storage: StorageBackend,
     ) -> SegmentResult:
+        body = await self._read_text(
+            storage, file_row.storage_key, cap=READ_SEGMENT_BYTES_CAP,
+        )
+        return self._slice(
+            body=body, args=args, file_row=file_row,
+        )
+
+    async def read_segment_from_bytes(
+        self,
+        body: bytes,
+        args: dict[str, Any],
+        *,
+        filename: str | None = None,
+    ) -> SegmentResult:
+        """Bytes-first variant — used by ArchivePipeline for member peeks
+        and dispatched reads. No file_row, so section_id / heading lookups
+        (which rely on persisted description.sections) are unavailable.
+        """
+        text = _decode_text(body[:READ_SEGMENT_BYTES_CAP])
+        return self._slice(body=text, args=args, file_row=None)
+
+    def _slice(
+        self,
+        *,
+        body: str,
+        args: dict[str, Any],
+        file_row: Any | None,
+    ) -> SegmentResult:
         """Resolve the args dict against this file's text body.
 
         Priority (first matching field wins):
@@ -221,9 +249,6 @@ class TextPipeline(Pipeline):
 
         offset/max_chars also act as a clamp on the result of (2)-(4).
         """
-        body = await self._read_text(storage, file_row.storage_key,
-                                      cap=READ_SEGMENT_BYTES_CAP)
-
         offset = max(0, int(args.get("offset") or 0))
         max_chars = int(args.get("max_chars") or DEFAULT_MAX_CHARS)
         if max_chars <= 0:
@@ -240,10 +265,10 @@ class TextPipeline(Pipeline):
         section_id = (args.get("section_id") or "").strip()
         heading = (args.get("heading") or "").strip()
         if section_id or heading:
-            sections = _sections_from_file(file_row)
+            sections = _sections_from_file(file_row) if file_row else None
             if sections is None:
                 return SegmentResult(
-                    error="no description.sections in file",
+                    error="section_id/heading lookup needs persisted description",
                 )
             target = _find_section(sections, section_id=section_id, heading=heading)
             if target is None:
@@ -302,14 +327,7 @@ class TextPipeline(Pipeline):
             if len(buf) > cap:
                 buf = bytearray(buf[:cap])
                 break
-        # robust decode — text mime says "should be utf-8" but we tolerate
-        # latin-1 / arbitrary as last resort.
-        for enc in ("utf-8", "utf-8-sig", "utf-16"):
-            try:
-                return buf.decode(enc)
-            except UnicodeDecodeError:
-                continue
-        return buf.decode("utf-8", errors="replace")
+        return _decode_text(bytes(buf))
 
 
 # ---- read_segment helpers ----------------------------------------------------
@@ -456,3 +474,14 @@ def _pattern_search(
             "hits": hits,
         },
     )
+
+
+def _decode_text(buf: bytes) -> str:
+    """Robust decode — text mime says "should be utf-8" but we tolerate
+    BOM / utf-16 / arbitrary as last resort."""
+    for enc in ("utf-8", "utf-8-sig", "utf-16"):
+        try:
+            return buf.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return buf.decode("utf-8", errors="replace")

@@ -4,6 +4,15 @@ from functools import lru_cache
 
 from marginalia.config import get_settings
 from marginalia.storage.base import StorageBackend
+from marginalia.storage.decompress import (
+    ArchiveMember,
+    ArchiveSession,
+    DecompressionError,
+    detect_compression,
+    is_archive_suffix,
+    iter_archive_members,
+    open_archive,
+)
 from marginalia.storage.local import LocalStorage
 from marginalia.storage.s3 import S3Storage
 
@@ -22,4 +31,10 @@ def get_storage() -> StorageBackend:
     )
 
 
-__all__ = ["StorageBackend", "LocalStorage", "S3Storage", "get_storage"]
+__all__ = [
+    "StorageBackend", "LocalStorage", "S3Storage", "get_storage",
+    "open_archive", "iter_archive_members",
+    "ArchiveMember", "ArchiveSession",
+    "detect_compression", "is_archive_suffix",
+    "DecompressionError",
+]

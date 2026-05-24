@@ -248,6 +248,22 @@ class PdfPipeline(Pipeline):
         args: dict[str, Any],
         storage: StorageBackend,
     ) -> SegmentResult:
+        pdf_bytes = await self._read_bytes(storage, file_row.storage_key)
+        return self._slice(pdf_bytes, args)
+
+    async def read_segment_from_bytes(
+        self,
+        body: bytes,
+        args: dict[str, Any],
+        *,
+        filename: str | None = None,
+    ) -> SegmentResult:
+        """Bytes-first variant — used by ArchivePipeline for member peeks."""
+        return self._slice(body, args)
+
+    def _slice(
+        self, pdf_bytes: bytes, args: dict[str, Any],
+    ) -> SegmentResult:
         """Resolve args against a PDF's text body.
 
         Field priority:
@@ -258,8 +274,10 @@ class PdfPipeline(Pipeline):
 
         offset/max_chars further clamp the result of (2).
         """
-        pdf_bytes = await self._read_bytes(storage, file_row.storage_key)
-        pages = self._extract_text(pdf_bytes)
+        try:
+            pages = self._extract_text(pdf_bytes)
+        except Exception as exc:  # noqa: BLE001
+            return SegmentResult(error=f"PDF parse failed: {exc}")
         total_pages = len(pages)
         body = "\n\n".join(
             f"[Page {i+1}]\n{txt}" for i, txt in enumerate(pages) if txt
@@ -494,7 +512,9 @@ async def describe_images(
 
 
 async def _describe_one(client, img: ExtractedImage) -> DescribedImage:
-    b64 = base64.b64encode(img.data).decode("ascii")
+    from marginalia.pipelines.image import downscale_for_vlm
+    scaled, media_type = downscale_for_vlm(img.data)
+    b64 = base64.b64encode(scaled).decode("ascii")
     user_text = (
         f"Figure on page {img.page_num} (fig {img.fig_index}) of a PDF. "
         f"Describe in 1-3 sentences."
@@ -503,7 +523,7 @@ async def _describe_one(client, img: ExtractedImage) -> DescribedImage:
         system=FIGURE_DESCRIBE_SYSTEM,
         messages=[ChatMessage(role="user", content=[
             TextBlock(text=user_text),
-            ImageBlock(media_type=img.media_type, data_b64=b64),
+            ImageBlock(media_type=media_type, data_b64=b64),
         ])],
         max_tokens=300,
         temperature=0.2,

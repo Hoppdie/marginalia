@@ -63,6 +63,28 @@ class SpreadsheetPipeline(Pipeline):
         args: dict[str, Any],
         storage: StorageBackend,
     ) -> SegmentResult:
+        body = await self._extract_text(storage, file_row.storage_key)
+        return self._slice(body, args)
+
+    async def read_segment_from_bytes(
+        self,
+        body: bytes,
+        args: dict[str, Any],
+        *,
+        filename: str | None = None,
+    ) -> SegmentResult:
+        """Bytes-first variant — used by ArchivePipeline for member peeks."""
+        if len(body) > MAX_XLSX_BYTES:
+            return SegmentResult(
+                error=f"xlsx exceeds {MAX_XLSX_BYTES // (1024*1024)}MB cap",
+            )
+        try:
+            text = self._render_from_bytes(body)
+        except Exception as exc:  # noqa: BLE001
+            return SegmentResult(error=f"xlsx parse failed: {exc}")
+        return self._slice(text, args)
+
+    def _slice(self, body: str, args: dict[str, Any]) -> SegmentResult:
         """Resolve args against the rendered workbook.
 
         Field priority:
@@ -70,8 +92,6 @@ class SpreadsheetPipeline(Pipeline):
           2. heading              → "Sheet: <name>" → that sheet's rows
           3. (default)            → offset..offset+max_chars chunk
         """
-        body = await self._extract_text(storage, file_row.storage_key)
-
         offset = max(0, int(args.get("offset") or 0))
         max_chars = int(args.get("max_chars") or DEFAULT_MAX_CHARS)
         if max_chars <= 0:
@@ -101,16 +121,8 @@ class SpreadsheetPipeline(Pipeline):
 
         return _clamp_ss(body, offset, max_chars)
 
-    @staticmethod
-    async def _extract_text(storage: StorageBackend, key: str) -> str:
-        try:
-            import openpyxl  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "spreadsheet pipeline needs openpyxl; "
-                "`pip install openpyxl`"
-            ) from exc
-
+    @classmethod
+    async def _extract_text(cls, storage: StorageBackend, key: str) -> str:
         buf = bytearray()
         async for chunk in storage.get(key):
             buf.extend(chunk)
@@ -118,9 +130,19 @@ class SpreadsheetPipeline(Pipeline):
                 raise ValueError(
                     f"xlsx exceeds {MAX_XLSX_BYTES // (1024*1024)}MB cap"
                 )
+        return cls._render_from_bytes(bytes(buf))
 
+    @staticmethod
+    def _render_from_bytes(body: bytes) -> str:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "spreadsheet pipeline needs openpyxl; "
+                "`pip install openpyxl`"
+            ) from exc
         wb = openpyxl.load_workbook(
-            io.BytesIO(bytes(buf)),
+            io.BytesIO(body),
             data_only=True,
             read_only=True,
         )

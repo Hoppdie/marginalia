@@ -47,6 +47,9 @@ class PipelineContext:
     original_ext: str | None
     folder_path: str          # e.g. "/research/llm" — display only
     sibling_names: list[str]  # other entries in the same folder
+    display_name: str | None = None   # original upload filename, for
+                                      # pipelines like archive that need
+                                      # the suffix to pick a decoder
     catalog_sketch: list[dict[str, Any]] = field(default_factory=list)
     tag_vocabulary: list[dict[str, Any]] = field(default_factory=list)
 
@@ -123,6 +126,22 @@ class Pipeline(ABC):
         """Default — pipelines that haven't implemented this yet decline."""
         return SegmentResult(
             error=f"{self.name} pipeline does not support read_segment yet",
+        )
+
+    async def read_segment_from_bytes(
+        self,
+        body: bytes,
+        args: dict[str, Any],
+        *,
+        filename: str | None = None,
+    ) -> SegmentResult:
+        """Bytes-first read_segment. Used by ArchivePipeline to dispatch
+        reads of an archive's internal members (which never become file
+        rows of their own). Pipelines that don't override this decline.
+        """
+        return SegmentResult(
+            error=f"{self.name} pipeline does not support "
+                  "read_segment_from_bytes yet",
         )
 
     async def list_members(
