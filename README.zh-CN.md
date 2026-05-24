@@ -47,8 +47,11 @@ marginalia> 帮我对比 Raft 和 Paxos
 
 ```
 /help                                  列出所有命令
-/upload <本地> <远端>                  尾斜杠 = 文件夹；带扩展名 = 文件名
+/upload <本地> <远端>                  从 vault 外把文件拷进 vault
 /upload <本地> <远端> --name X         显式指定 display_name
+/check                                  对比 vault 磁盘和 db 的差异（只读）
+/ingest <vault_path>                    把 vault 内某个文件同步到 db
+/ingest --all                           整个 vault 一次性同步（git add -A 风格）
 /tree                                  文件夹树
 /ls [parent_id]                        列子文件夹
 /cd <path>                             切换"远端 cwd"，影响 /upload 的相对路径
@@ -132,11 +135,17 @@ GET  /health                            探活（不带 v1，监控惯例）
 所有设置走 `.env`。重点：
 
 ```ini
+MARGINALIA_HOME=~/Marginalia     # 单一根目录；db + library + objects 都在这下面
 DB_BACKEND=sqlite                # 或 postgres
-SQLITE_PATH=./data/marginalia.db
+SQLITE_PATH=                     # 留空 → <home>/marginalia.db
 
-STORAGE_BACKEND=local            # 或 s3
-LOCAL_STORAGE_ROOT=./data/objects
+STORAGE_BACKEND=mirror           # 默认。用户可读的文件夹树
+                                 # <home>/library/research/llm/paper.pdf
+                                 # 配合 /check 和 /ingest 跟磁盘双向同步。
+                                 # 备选：'local'（UUID 散列、开 dedup、高 churn
+                                 # 场景下快约 5 倍），'s3'（多机部署）。
+MIRROR_VAULT_ROOT=               # 留空 → <home>/library
+LOCAL_STORAGE_ROOT=              # 留空 → <home>/objects（仅 local 用）
 
 WORKER_ENABLED=true              # embedded 模式默认；TaskRunner 跑在 CLI/server 进程内
 

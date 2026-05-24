@@ -647,9 +647,8 @@ class _ExitREPL(Exception):
 async def cmd_check(ctx: CliContext, args: str) -> None:
     """/check  — diff the mirror vault against db (no writes).
 
-    Walks <vault>, hashes each file, and reports new / missing / moved
-    entries vs the db. Read-only — apply with /sync, /ingest --all, or
-    /forget --all-missing.
+    Walks <vault>, hashes each file, and reports new / modified / moved /
+    missing entries vs the db. Read-only — apply with /ingest.
     """
     report = await _load_scan_report()
     if report is None:
@@ -658,56 +657,21 @@ async def cmd_check(ctx: CliContext, args: str) -> None:
     print(render_report(report))
 
 
-@command("sync")
-async def cmd_sync(ctx: CliContext, args: str) -> None:
-    """/sync  — apply ALL detected changes: ingest new, apply moves,
-    forget missing. Confirmation required unless --yes."""
-    report = await _load_scan_report()
-    if report is None:
-        return
-    if report.total_changes == 0:
-        print("nothing to do — vault is in sync with db.")
-        return
-
-    from marginalia.services.scan import render_report
-    print(render_report(report))
-    if "--yes" not in args.split():
-        print(
-            f"\napply {report.total_changes} changes "
-            f"({len(report.new)} ingest, {len(report.moved)} move, "
-            f"{len(report.missing)} forget)? [y/N] ",
-            end="",
-        )
-        try:
-            confirm = input().strip().lower()
-        except EOFError:
-            confirm = ""
-        if confirm not in ("y", "yes"):
-            print("cancelled.")
-            return
-
-    from marginalia.services.sync import (
-        apply_moved, forget_all_missing, ingest_all_new,
-    )
-    ingested = await ingest_all_new(report)
-    moved = await apply_moved(report)
-    forgotten = await forget_all_missing(report)
-    print(
-        f"applied: ingest={len(ingested)} move={moved} forget={forgotten}"
-    )
-
-
 @command("ingest")
 async def cmd_ingest(ctx: CliContext, args: str) -> None:
-    """/ingest <vault_path> | --all  — adopt vault-side files into db.
+    """/ingest <vault_path> | --all  — make db match disk.
 
-    Only handles files ALREADY inside the vault directory (mirror mode).
-    For copying a file into the vault from somewhere else on disk, use
-    /upload — that one writes the file then ingests in one step.
+    Like `git add`: bring db in sync with the actual state of the file
+    on disk. Handles four cases at once:
+      - file is new on disk        → create entry + queue ingest
+      - file content changed       → re-queue ingest (entry kept)
+      - file moved/renamed         → update folder + display_name
+      - file gone from disk        → soft-delete entry
 
-    /ingest <path>     adopt a single vault-relative or absolute path
-                       that lives inside the vault
-    /ingest --all      adopt everything /check categorises as `new`
+    Single-path form acts on whatever category that path falls in.
+    --all form applies every change /check reports. /upload is for
+    copying a file from OUTSIDE the vault into it; /ingest is the
+    in-vault counterpart.
     """
     from pathlib import Path
     from marginalia.config import get_settings
@@ -725,23 +689,46 @@ async def cmd_ingest(ctx: CliContext, args: str) -> None:
     parts = args.split()
     if not parts:
         print(
-            "usage: /ingest <vault_path>   adopt a single vault-side file\n"
-            "       /ingest --all          adopt every disk-side new file\n"
+            "usage: /ingest <vault_path>   sync a single file\n"
+            "       /ingest --all          sync the entire vault\n"
             "  copy a file from outside the vault → /upload"
         )
         return
 
     vault_root = Path(get_settings().mirror_vault_root).resolve()
+
     if "--all" in parts:
         report = await _load_scan_report()
-        if report is None or not report.new:
-            print("no new files on disk.")
+        if report is None:
             return
-        from marginalia.services.sync import ingest_all_new
-        out = await ingest_all_new(report)
-        print(f"ingested {len(out)} new files.")
+        if report.total_changes == 0:
+            print("nothing to do — vault is in sync with db.")
+            return
+        from marginalia.services.scan import render_report
+        from marginalia.services.sync import apply_all
+        print(render_report(report))
+        if "--yes" not in parts:
+            print(
+                f"\napply {report.total_changes} changes? [y/N] ",
+                end="",
+            )
+            try:
+                confirm = input().strip().lower()
+            except EOFError:
+                confirm = ""
+            if confirm not in ("y", "yes"):
+                print("cancelled.")
+                return
+        out = await apply_all(report)
+        print(
+            f"applied: ingested={out['ingested']} "
+            f"modified={out['modified']} moved={out['moved']} "
+            f"forgotten={out['forgotten']}"
+        )
         return
 
+    # Single-path form. Resolve, validate vault membership, route to
+    # the right per-category handler.
     target_arg = parts[0]
     target = Path(target_arg)
     if not target.is_absolute():
@@ -757,33 +744,47 @@ async def cmd_ingest(ctx: CliContext, args: str) -> None:
         )
         return
     if not target.is_file():
-        print(f"not a file: {target}")
+        print(
+            f"not a file: {target}\n"
+            f"  (single-path /ingest expects an existing vault file. "
+            f"To clean up entries whose disk file is gone, run /ingest --all.)"
+        )
         return
 
-    from marginalia.services.sync import adopt_disk_file
-    eid = await adopt_disk_file(target, vault_root)
-    if eid is None:
-        print(f"failed to ingest {target}")
-        return
-    print(f"ingested {target.relative_to(vault_root)} → entry={eid[:8]}")
+    # Route by classifying this one path. Cheap: hash the file, check db.
+    from marginalia.services.sync import (
+        adopt_disk_file, apply_modified, apply_moved,
+    )
+    from marginalia.services.scan import scan_vault, ScanReport
+    full_report = await scan_vault(vault_root)
+    rel = target.relative_to(vault_root).as_posix()
 
+    # Match this path against each category in the full scan.
+    new_match = next((p for p in full_report.new
+                      if p.relative_to(vault_root).as_posix() == rel), None)
+    mod_match = next(((e, p) for e, p in full_report.modified
+                      if p.relative_to(vault_root).as_posix() == rel), None)
+    moved_match = next(((e, p) for e, p in full_report.moved
+                        if p.relative_to(vault_root).as_posix() == rel), None)
 
-@command("forget")
-async def cmd_forget(ctx: CliContext, args: str) -> None:
-    """/forget --all-missing  — soft-delete every entry whose disk file
-    is gone. /forget <entry_id> is /delete in the existing CLI."""
-    if "--all-missing" not in args.split():
-        print("usage: /forget --all-missing  (per-entry: /delete)")
+    if new_match is not None:
+        eid = await adopt_disk_file(new_match, vault_root)
+        print(f"ingested {rel} → entry={eid[:8] if eid else '?'}")
         return
-    report = await _load_scan_report()
-    if report is None:
+    if mod_match is not None:
+        # apply_modified expects a ScanReport — build a minimal one.
+        sub = ScanReport(vault_root=vault_root,
+                         modified=[mod_match])
+        n = await apply_modified(sub)
+        print(f"refreshed {rel} (entry stays, ingest re-queued; n={n})")
         return
-    if not report.missing:
-        print("nothing missing.")
+    if moved_match is not None:
+        sub = ScanReport(vault_root=vault_root,
+                         moved=[moved_match])
+        n = await apply_moved(sub)
+        print(f"updated db to match disk path {rel} (n={n})")
         return
-    from marginalia.services.sync import forget_all_missing
-    n = await forget_all_missing(report)
-    print(f"soft-deleted {n} entries.")
+    print(f"{rel} is already in sync.")
 
 
 async def _load_scan_report():

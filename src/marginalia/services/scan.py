@@ -39,12 +39,16 @@ class ScanReport:
     new: list[Path] = field(default_factory=list)
     missing: list[FileEntry] = field(default_factory=list)
     moved: list[tuple[FileEntry, Path]] = field(default_factory=list)
+    modified: list[tuple[FileEntry, Path]] = field(default_factory=list)
     in_sync_count: int = 0
     vault_root: Path = field(default_factory=Path)
 
     @property
     def total_changes(self) -> int:
-        return len(self.new) + len(self.missing) + len(self.moved)
+        return (
+            len(self.new) + len(self.missing)
+            + len(self.moved) + len(self.modified)
+        )
 
 
 async def scan_vault(vault_root: Path) -> ScanReport:
@@ -83,6 +87,13 @@ async def scan_vault(vault_root: Path) -> ScanReport:
             disk_sha = disk_files.get(expected_rel)
             if disk_sha == file_row.sha256:
                 report.in_sync_count += 1
+                seen_disk_paths.add(expected_rel)
+                continue
+            if disk_sha is not None:
+                # Same path, different content: user edited in place.
+                # Treat as a re-ingest target rather than missing+new
+                # so the report stays readable.
+                report.modified.append((entry, vault_root / expected_rel))
                 seen_disk_paths.add(expected_rel)
                 continue
             # Hash matches some other path? It's a move/rename.
@@ -129,10 +140,11 @@ def _walk_and_hash(vault_root: Path) -> dict[str, str]:
 def render_report(report: ScanReport) -> str:
     lines = [
         f"vault: {report.vault_root}",
-        f"  in_sync: {report.in_sync_count}",
-        f"  new:     {len(report.new)}",
-        f"  missing: {len(report.missing)}",
-        f"  moved:   {len(report.moved)}",
+        f"  in_sync:  {report.in_sync_count}",
+        f"  new:      {len(report.new)}",
+        f"  modified: {len(report.modified)}",
+        f"  missing:  {len(report.missing)}",
+        f"  moved:    {len(report.moved)}",
     ]
     if report.new:
         lines.append("\n[new] disk files not in db:")
@@ -141,6 +153,13 @@ def render_report(report: ScanReport) -> str:
             lines.append(f"  + {rel}  ({p.stat().st_size:,} B)")
         if len(report.new) > 50:
             lines.append(f"  … {len(report.new) - 50} more")
+    if report.modified:
+        lines.append("\n[modified] same path, content changed:")
+        for entry, path in report.modified[:50]:
+            rel = path.relative_to(report.vault_root)
+            lines.append(f"  ~ {rel}  (entry={entry.id[:8]})")
+        if len(report.modified) > 50:
+            lines.append(f"  … {len(report.modified) - 50} more")
     if report.missing:
         lines.append("\n[missing] db entries with no disk file:")
         for e in report.missing[:50]:
@@ -154,4 +173,9 @@ def render_report(report: ScanReport) -> str:
             lines.append(f"  ~ {entry.display_name} → {rel}")
         if len(report.moved) > 50:
             lines.append(f"  … {len(report.moved) - 50} more")
+    if report.total_changes > 0:
+        lines.append(
+            "\nApply with /ingest --all  "
+            "(or /ingest <path> for one file)"
+        )
     return "\n".join(lines)

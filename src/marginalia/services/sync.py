@@ -222,3 +222,72 @@ async def forget_all_missing(report: ScanReport) -> int:
                           entry.id, exc)
                 await session.rollback()
     return n
+
+
+async def apply_modified(report: ScanReport) -> int:
+    """For entries whose disk file changed in place (same path, different
+    sha256), update file_row.sha256/size and re-queue ingest. The entry
+    keeps its identity (folder + display_name + entry_id stay the same)
+    so callers / agents holding the entry_id don't lose context — only
+    the indexed content gets refreshed.
+    """
+    import hashlib
+    from sqlalchemy import select
+    from marginalia.db.models import File
+    from marginalia.tasks.enqueue import enqueue
+    from marginalia.tasks.kinds import KIND_INGEST_FILE
+
+    factory = get_session_factory()
+    n = 0
+    for entry, path in report.modified:
+        h = hashlib.sha256()
+        size = 0
+        with path.open("rb") as f:
+            while chunk := f.read(1024 * 256):
+                h.update(chunk)
+                size += len(chunk)
+        new_sha = h.hexdigest()
+
+        async with factory() as session:
+            try:
+                live_entry = await session.get(FileEntry, entry.id)
+                if live_entry is None or live_entry.deleted_at is not None:
+                    continue
+                file_row = await session.get(File, live_entry.file_id)
+                if file_row is None:
+                    continue
+                file_row.sha256 = new_sha
+                file_row.size_bytes = size
+                file_row.ingest_status = "pending"
+                file_row.summary = None
+                file_row.description = None
+                await enqueue(
+                    session, kind=KIND_INGEST_FILE,
+                    payload={
+                        "file_id": file_row.id,
+                        "entry_id": live_entry.id,
+                    },
+                )
+                await session.commit()
+                n += 1
+            except Exception as exc:  # noqa: BLE001
+                log.error("apply_modified: failed for entry=%s: %s",
+                          entry.id, exc)
+                await session.rollback()
+    return n
+
+
+async def apply_all(report: ScanReport) -> dict[str, int]:
+    """Single entry point: ingest new + apply moved + apply modified +
+    forget missing. Mirrors `git add -A` semantics — make db match disk
+    in every category."""
+    new = await ingest_all_new(report)
+    moved = await apply_moved(report)
+    modified = await apply_modified(report)
+    forgotten = await forget_all_missing(report)
+    return {
+        "ingested": len(new),
+        "moved": moved,
+        "modified": modified,
+        "forgotten": forgotten,
+    }

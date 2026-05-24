@@ -52,8 +52,11 @@ a slash command; everything else is forwarded to the agent as chat.
 
 ```
 /help                                  list commands
-/upload <local> <remote>               trailing '/' = folder, with extension = filename
+/upload <local> <remote>               copy a file from OUTSIDE the vault into it
 /upload <local> <remote> --name X      explicit display name
+/check                                  diff vault disk vs db (read-only)
+/ingest <vault_path>                    sync one vault file with db
+/ingest --all                           sync the whole vault (git add -A style)
 /tree                                  folder tree
 /ls [parent_id]                        list folders
 /cd <path>                             change "remote cwd" for relative uploads
@@ -139,11 +142,17 @@ state machine renders against these.
 All settings via `.env`. Highlights:
 
 ```ini
+MARGINALIA_HOME=~/Marginalia     # one root; db + library + objects under here
 DB_BACKEND=sqlite                # or postgres
-SQLITE_PATH=./data/marginalia.db
+SQLITE_PATH=                     # blank → <home>/marginalia.db
 
-STORAGE_BACKEND=local            # or s3
-LOCAL_STORAGE_ROOT=./data/objects
+STORAGE_BACKEND=mirror           # default. user-readable folder tree under
+                                 # <home>/library/research/llm/paper.pdf
+                                 # → use /check + /ingest to round-trip with disk.
+                                 # alt: 'local' (UUID-flat, dedup on, ~5x faster
+                                 # for high-churn workloads), 's3' (multi-host).
+MIRROR_VAULT_ROOT=               # blank → <home>/library
+LOCAL_STORAGE_ROOT=              # blank → <home>/objects (only used by local)
 
 WORKER_ENABLED=true              # default in embedded mode; TaskRunner runs in-process
 
