@@ -9,9 +9,8 @@ Created/updated artifacts (in `cwd`):
   - .marginalia/     local cache (sessions, tmp)
   - .gitignore       appended with Marginalia-local artifacts
 
-The migration step is OPTIONAL and printed as a next step, not run
-automatically — alembic config / DB connectivity might not be ready yet
-when `init` runs.
+Schema creation happens automatically on first server / worker startup
+(see `marginalia.db.bootstrap`), so this command does not touch the DB.
 """
 from __future__ import annotations
 
@@ -93,10 +92,9 @@ def render_report(cwd: Path, artifacts: list[_Artifact]) -> str:
     lines.append("")
     lines.append("Next steps:")
     lines.append("  1. Edit .env and set LLM_DEFAULT_API_KEY (or per-profile keys).")
-    lines.append("  2. Run database migrations:  alembic upgrade head")
-    lines.append("  3. Start the API:            uvicorn marginalia.main:app")
-    lines.append("  4. (Production) start the worker:  marginalia-worker")
-    lines.append("  5. Open the CLI:             marginalia")
+    lines.append("  2. Start the API:            uvicorn marginalia.main:app")
+    lines.append("  3. (Production) start the worker:  marginalia-worker")
+    lines.append("  4. Open the CLI:             marginalia")
     lines.append("")
     return "\n".join(lines)
 

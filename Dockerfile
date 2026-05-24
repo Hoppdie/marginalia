@@ -81,6 +81,7 @@ USER marginalia
 
 EXPOSE 8000
 
-# Default command runs the API. The worker service in compose overrides
-# `command:` to `marginalia-worker`.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn marginalia.main:app --host 0.0.0.0 --port 8000"]
+# Schema bootstrap runs on app startup (marginalia.db.bootstrap), so the
+# container just needs to exec uvicorn. Worker service overrides command
+# to `marginalia-worker`.
+CMD ["uvicorn", "marginalia.main:app", "--host", "0.0.0.0", "--port", "8000"]

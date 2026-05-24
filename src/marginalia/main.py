@@ -16,6 +16,7 @@ from marginalia.api.routes_tend import router as tend_router
 from marginalia.api.routes_upload import router as upload_router
 from marginalia.api.routes_user_files import router as user_files_router
 from marginalia.config import get_settings, validate_llm_config
+from marginalia.db.bootstrap import bootstrap_schema
 from marginalia.db.engine import dispose_engine
 from marginalia.tasks.runner import TaskRunner
 
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     validate_llm_config(settings)
+    await bootstrap_schema()
     await _check_storage_consistency(settings)
     runner: TaskRunner | None = None
     if settings.worker_enabled:

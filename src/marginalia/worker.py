@@ -25,6 +25,7 @@ import signal
 import sys
 
 from marginalia.config import Settings, get_settings
+from marginalia.db.bootstrap import bootstrap_schema
 from marginalia.tasks.runner import TaskRunner
 
 log = logging.getLogger("marginalia.worker")
@@ -38,6 +39,7 @@ def _setup_logging(level: str) -> None:
 
 
 async def _arun(settings: Settings) -> int:
+    await bootstrap_schema()
     runner = TaskRunner(settings=settings)
     await runner.start()
     log.info("worker %s started; polling every %.1fs (lease=%ds, batch=%d)",
