@@ -227,6 +227,7 @@ async def handle_summarize_session(payload: Mapping[str, Any]) -> None:
             anchor_conversation_id=last_conversation_id,
             insights=raw_insights,
             superseded_ids=raw_superseded,
+            summarized_journal_ids=[r["id"] for r in reflect_rows],
         )
         await session.commit()
 
@@ -335,6 +336,7 @@ async def _persist_insights(
     anchor_conversation_id: str,
     insights: list[Mapping[str, Any]],
     superseded_ids: list[str],
+    summarized_journal_ids: list[str],
 ) -> None:
     now = _utcnow()
     inserted_ids: list[str] = []
@@ -350,6 +352,7 @@ async def _persist_insights(
             tags=list(ins.get("tags") or []),
             source_kind="insight",
             superseded_by_id=None,
+            summarized_journal_ids=list(summarized_journal_ids),
             created_at=now,
         )
         session.add(new_journal)

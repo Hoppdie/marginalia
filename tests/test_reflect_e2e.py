@@ -66,7 +66,13 @@ def _make_fake_reflect(entry_a: str, entry_b: str):
     payload = {
         "journal_entries": [
             {
-                "note": "User asked to compare paper A and paper B; both share consensus theme.",
+                "question": "How do paper A and paper B compare on consensus?",
+                "answer": (
+                    "Both papers tackle distributed consensus but from different angles. "
+                    "A focuses on leader election under crash-stop failures with a single-leader model. "
+                    "B targets Byzantine acceptors and quorum intersection. "
+                    "They overlap on safety arguments via majority voting; recommend reading A first as the simpler model."
+                ),
                 "entry_ids": [entry_a, entry_b],
                 "tags": ["hint:enrich_tags"],
             }

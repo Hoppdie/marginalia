@@ -100,6 +100,11 @@ class Journal(Base, IdMixin):
     one (e.g. user changed their mind about a routing rule), the older row
     points forward to the newer. Active-insight queries filter
     `WHERE superseded_by_id IS NULL`.
+
+    `summarized_journal_ids` (insight only) is the list of reflect_turn
+    journal ids that summarize_session distilled into this insight —
+    answers "which raw bullets did this insight come from?" for audit
+    and debugging. NULL on reflect_turn rows.
     """
 
     __tablename__ = "journal"
@@ -115,6 +120,10 @@ class Journal(Base, IdMixin):
             "source_kind = 'insight' OR superseded_by_id IS NULL",
             name="supersede_only_on_insight",
         ),
+        CheckConstraint(
+            "source_kind = 'insight' OR summarized_journal_ids IS NULL",
+            name="summarized_only_on_insight",
+        ),
     )
 
     conversation_id: Mapped[str] = mapped_column(
@@ -129,5 +138,8 @@ class Journal(Base, IdMixin):
         ForeignKey("journal.id", ondelete="SET NULL"),
         nullable=True,
         default=None,
+    )
+    summarized_journal_ids: Mapped[Any | None] = mapped_column(
+        JSON, nullable=True, default=None,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

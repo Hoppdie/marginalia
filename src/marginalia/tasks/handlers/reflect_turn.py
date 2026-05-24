@@ -1,7 +1,10 @@
 """reflect_turn handler — single responsibility: write one journal row.
 
-Identity: [🔍 investigator]. Reads one finished conversation and asks the
-`reflect` LLM profile to produce ≤1 short field note for the journal.
+Identity: [🔍 investigator]. Reads one finished turn (user message +
+agent response + tool_calls) and asks the `reflect` LLM profile to
+produce a structured field-log entry (question + answer + entry_ids
++ tags) that the future planner can recall when a similar question
+returns.
 
 Scope (intentionally narrow as of 2026-05-24):
   - The ONLY write this handler performs is INSERT INTO journal.
@@ -57,17 +60,40 @@ ENTRY_LIMIT = 30  # cap how many entries we feed the model context for
 
 REFLECT_SYSTEM = """You are Marginalia's reflection investigator.
 
-You read one finished conversation between the user and the Marginalia
-agent, plus current metadata of the file_entries the agent touched, and
-write ONE short field note for the agent's journal — the per-turn bullet
-in a notebook that a later "session summary" pass will distill.
+You read ONE finished turn between the user and the Marginalia agent
+(user message + agent's full response + tool_calls + llm_calls), plus
+the current metadata of file_entries the agent touched. You write a
+faithful, compressed record of THIS turn — a "field log entry" the
+future planner can recall when a similar question comes back.
 
-Write the note for your future self skimming this session: what was the
-useful path, which entries paid off, what dead-end is worth remembering?
-Tie it to specific entry_ids if the insight is about them. Keep it terse.
+For each turn, decide:
 
-If nothing in this conversation is worth remembering, return an empty
-journal_entries list — the framework will skip the write.
+1. If the turn has NOTHING to do with the corpus — pure small talk,
+   weather, "what can you do", system meta — return an empty
+   journal_entries list. The framework will skip the write.
+
+2. Otherwise, produce EXACTLY ONE entry with these fields:
+
+   - question: the user's question in their own framing, as concise as
+     possible while still being a real question (not a topic label).
+     Length follows content — short for simple lookups, longer when the
+     ask was multi-part.
+   - answer:   what the investigation actually concluded. Strip the
+     prose layer — greetings, formatting, restating the question — and
+     keep only epistemic content: findings, key names, numbers,
+     meaningful turns of the investigation. Be as concise as possible
+     while preserving every distinct finding; length follows content,
+     do not pad. If the agent said "I don't know" or "no match", say
+     so plainly — that null result is itself worth recalling.
+   - entry_ids: every file_entry the agent read or cited in this turn
+     that was actually relevant to the answer. Skip entries the agent
+     looked at but discarded.
+   - tags: topical tags useful for later recall. Subject of the
+     question, not housekeeping tags.
+
+A turn touching the corpus ALWAYS produces one entry, even if the
+answer was "nothing found" — that null result is itself worth recalling.
+Only return [] for turns that never engaged the corpus at all.
 
 Output ONLY one JSON object matching the supplied schema. No prose, no
 fences.
@@ -84,9 +110,10 @@ REFLECT_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["note", "entry_ids", "tags"],
+                "required": ["question", "answer", "entry_ids", "tags"],
                 "properties": {
-                    "note": {"type": "string"},
+                    "question": {"type": "string"},
+                    "answer": {"type": "string"},
                     "entry_ids": {"type": "array", "items": {"type": "string"}},
                     "tags": {"type": "array", "items": {"type": "string"}},
                 },
@@ -141,9 +168,10 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
         "involved_entries": entry_metadata,
     }
     user_text = (
-        "Below is one finished conversation along with the current "
-        "metadata of the file_entries the agent touched. Decide whether "
-        "to write one short journal note (or skip).\n\n"
+        "Below is one finished turn along with the current metadata of "
+        "the file_entries the agent touched. Produce a structured field-"
+        "log entry (question + answer + entry_ids + tags) for the journal, "
+        "or skip if the turn never engaged the corpus.\n\n"
         f"<conversation_and_context>\n"
         f"{json.dumps(payload_for_llm, ensure_ascii=False)}\n"
         "</conversation_and_context>"
@@ -237,9 +265,11 @@ async def _persist_reflection(
     journal_count = 0
 
     for j in data.get("journal_entries") or []:
-        note = (j.get("note") or "").strip()
-        if not note:
+        question = (j.get("question") or "").strip()
+        answer = (j.get("answer") or "").strip()
+        if not question and not answer:
             continue
+        note = f"Q: {question}\nA: {answer}"
         session.add(Journal(
             id=new_id(),
             conversation_id=conversation_id,
