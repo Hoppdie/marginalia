@@ -39,6 +39,9 @@ class AgentEvent:
       - "thinking"     : transient marker; execute LLM call started, no data
       - "tool_call"    : data = JSON{name, arguments, display}
       - "tool_result"  : data = JSON{name, ok, error?, preview?}
+      - "user_artifact": data = JSON{tool, payload} - side-channel content
+                          (e.g. chart spec) that's shown to the user but
+                          intentionally NOT fed back to the model
       - "answer"       : data = final answer text (single chunk; no token-level streaming yet)
       - "error"        : data = error message
       - "done"         : data = JSON usage dict (tokens, tool_calls, llm_calls, duration_ms, truncated)

@@ -570,7 +570,19 @@ async def _dispatch_tool_calls(
             continue
 
         duration_ms = int((time.monotonic() - started) * 1000)
-        result_text = json.dumps(result, ensure_ascii=False)
+        # Side-channel: tools may attach a `__user_only__` payload that is
+        # shown to the user (UI artifact, e.g. Vega-Lite spec) but kept
+        # OUT of the model's tool_result content — the model gets only
+        # the lightweight summary and the chart_id. We persist the full
+        # result (incl. side-channel) on the conversation row so /info
+        # and replays still show it.
+        user_only = None
+        if isinstance(result, dict) and "__user_only__" in result:
+            user_only = result.get("__user_only__")
+            result_for_model = {k: v for k, v in result.items() if k != "__user_only__"}
+        else:
+            result_for_model = result
+        result_text = json.dumps(result_for_model, ensure_ascii=False)
         if len(result_text) > MAX_TOOL_RESULT_LEN:
             result_text = result_text[:MAX_TOOL_RESULT_LEN] + "...(truncated)"
         async with session_scope() as db:
@@ -583,6 +595,14 @@ async def _dispatch_tool_calls(
                 duration_ms=duration_ms,
             )
             await db.commit()
+        if user_only is not None:
+            yield AgentEvent(
+                event_type="user_artifact",
+                data=json.dumps({
+                    "tool": tc.name,
+                    "payload": user_only,
+                }, ensure_ascii=False),
+            )
         preview = result_text[:TOOL_RESULT_PREVIEW_LEN]
         if len(result_text) > TOOL_RESULT_PREVIEW_LEN:
             preview += "..."

@@ -678,6 +678,17 @@ async def chat(ctx: CliContext, message: str) -> None:
                     payload = {}
                 if not payload.get("ok", True):
                     sp.update(f"工具失败: {payload.get('error', '')[:40]}")
+            elif ev.event_type == "user_artifact":
+                try:
+                    art = json.loads(ev.data)
+                except (ValueError, TypeError):
+                    art = {}
+                p = art.get("payload") or {}
+                if p.get("kind") == "vega_lite":
+                    sp.update(
+                        f"图表已生成: {p.get('chart_id', '?')} - "
+                        f"{(p.get('caption') or '')[:40]}"
+                    )
             elif ev.event_type == "answer":
                 answer = ev.data
             elif ev.event_type == "error":
