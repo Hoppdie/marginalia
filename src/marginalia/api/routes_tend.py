@@ -32,8 +32,10 @@ from marginalia.services.task_outcomes import record_outcome
 from marginalia.tasks.enqueue import enqueue
 from marginalia.tasks.kinds import (
     KIND_ENRICH_TAGS,
+    KIND_MINE_CITATION_GRAPH,
     KIND_MINE_CORPUS_EVIDENCE,
     KIND_MINE_SESSION_COOCCURRENCE,
+    KIND_MINE_TAG_OVERLAP,
     KIND_NORMALIZE_TAGS,
     KIND_PROPOSE_VIEWS,
     KIND_REFRESH_ENTRY_EXTRA,
@@ -47,7 +49,10 @@ router = APIRouter(tags=["tend"])
 
 # Order is the priority chain from kinds.py. normalize first (tags must be
 # clean before enrich); restructure after enrich (catalogs need stable tags);
-# mining and propose_views run after structural settling; refresh_entry_extra
+# the three relation miners run in parallel-shape after structural settling
+# (each writes entry_relations from a different signal: cooccurrence reads
+# journals, tag_overlap reads entry_tags, citation_graph reads conversation
+# citations). propose_views consumes the unified relation graph; refresh
 # closes out using everything that came before.
 TEND_CHAIN: tuple[str, ...] = (
     KIND_NORMALIZE_TAGS,
@@ -55,6 +60,8 @@ TEND_CHAIN: tuple[str, ...] = (
     KIND_RESTRUCTURE_CATALOGS,
     KIND_MINE_CORPUS_EVIDENCE,
     KIND_MINE_SESSION_COOCCURRENCE,
+    KIND_MINE_TAG_OVERLAP,
+    KIND_MINE_CITATION_GRAPH,
     KIND_PROPOSE_VIEWS,
     KIND_REFRESH_ENTRY_EXTRA,
 )

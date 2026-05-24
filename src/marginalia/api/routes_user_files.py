@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.db.models import Folder
 from marginalia.db.session import get_session
+from marginalia.services.recommend import find_related
 from marginalia.services.user_files import (
     EntryNotFoundError,
     FolderNotFoundError,
@@ -32,6 +33,33 @@ async def search(
 ) -> dict[str, Any]:
     entries = await search_entries(session, query=q, limit=limit)
     return {"q": q, "entries": entries, "count": len(entries)}
+
+
+@router.get("/discover/{entry_id}")
+async def discover(
+    entry_id: str,
+    top_k: int = Query(default=8, ge=1, le=30),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Random-walk recommendation from a seed entry. Drives both the
+    `/discover` REPL command and the `find_related` agent tool."""
+    rows = await find_related(
+        session, seed_entry_id=entry_id, top_k=top_k,
+    )
+    return {
+        "seed_entry_id": entry_id,
+        "results": [
+            {
+                "entry_id": r.entry_id,
+                "display_name": r.display_name,
+                "score": round(r.score, 4),
+                "visit_count": r.visit_count,
+                "direct_edge_weight": r.direct_edge_weight,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
 
 
 @router.get("/file-entries/{entry_id}/metadata")

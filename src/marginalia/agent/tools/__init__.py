@@ -84,6 +84,7 @@ def registered_tools() -> list[str]:
 # Order doesn't matter; the LLM picks among them by name.
 def _bootstrap() -> None:
     from marginalia.agent.tools import analyze_container  # noqa: F401
+    from marginalia.agent.tools import find_related  # noqa: F401
     from marginalia.agent.tools import list_catalogs  # noqa: F401
     from marginalia.agent.tools import list_files_in_folder  # noqa: F401
     from marginalia.agent.tools import list_folders  # noqa: F401

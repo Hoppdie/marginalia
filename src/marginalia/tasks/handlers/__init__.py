@@ -5,8 +5,10 @@ Importing this package registers all built-in handlers via their decorators.
 from marginalia.tasks.handlers import enrich_tags  # noqa: F401
 from marginalia.tasks.handlers import ingest_file  # noqa: F401
 from marginalia.tasks.handlers import lifecycle  # noqa: F401
+from marginalia.tasks.handlers import mine_citation_graph  # noqa: F401
 from marginalia.tasks.handlers import mine_corpus_evidence  # noqa: F401
 from marginalia.tasks.handlers import mine_session_cooccurrence  # noqa: F401
+from marginalia.tasks.handlers import mine_tag_overlap  # noqa: F401
 from marginalia.tasks.handlers import normalize_tags  # noqa: F401
 from marginalia.tasks.handlers import periodic_tick  # noqa: F401
 from marginalia.tasks.handlers import propose_views  # noqa: F401

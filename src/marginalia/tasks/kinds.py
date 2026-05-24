@@ -55,6 +55,8 @@ KIND_SUGGEST_ARCHIVAL = "suggest_archival"
 # Mining (corpus-side discovery, see design.md §9.x) -------------------------
 # Pure stats / structural sampling that produce entry_relations / views.
 KIND_MINE_SESSION_COOCCURRENCE = "mine_session_cooccurrence"
+KIND_MINE_TAG_OVERLAP = "mine_tag_overlap"
+KIND_MINE_CITATION_GRAPH = "mine_citation_graph"
 KIND_MINE_CORPUS_EVIDENCE = "mine_corpus_evidence"
 KIND_PROPOSE_VIEWS = "propose_views"
 KIND_REFRESH_ENTRY_EXTRA = "refresh_entry_extra"

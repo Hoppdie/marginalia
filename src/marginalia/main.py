@@ -63,13 +63,25 @@ async def _check_storage_consistency(settings) -> None:
     if not sample:
         return  # empty db, nothing to check
 
-    looks_uuid = lambda k: (
-        len(k) == 36 and k.count("-") == 4
-        or len(k.replace("/", "")) == 32
-    )
+    def _looks_uuid_flat(k: str) -> bool:
+        """Local backend storage_keys are 'xx/yy/<uuid>' or short test
+        fixtures like '00/aa/x'. The defining property: the leading two
+        segments are hex prefix dirs. Anything that starts with a real
+        word segment ('research/llm/paper.pdf') is a mirror key."""
+        parts = k.split("/")
+        if len(parts) < 2:
+            return False
+        # Hex prefix dirs are short and hex-only.
+        for seg in parts[:2]:
+            if not (1 <= len(seg) <= 4):
+                return False
+            if not all(c in "0123456789abcdef" for c in seg):
+                return False
+        return True
+
     backend = settings.storage_backend
     for k in sample:
-        is_uuid = looks_uuid(k)
+        is_uuid = _looks_uuid_flat(k)
         if backend == "mirror" and is_uuid:
             raise StorageBackendMismatchError(
                 f"STORAGE_BACKEND=mirror but existing files reference "

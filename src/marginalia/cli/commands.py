@@ -306,6 +306,45 @@ async def cmd_info(ctx: CliContext, args: str) -> None:
 """)
 
 
+@command("discover")
+async def cmd_discover(ctx: CliContext, args: str) -> None:
+    """/discover <entry_id> [N]  — show entries the corpus has linked to it.
+
+    Backed by random-walk-with-restart over the entry_relations graph
+    (cooccurrence + tag overlap + citation co-citation). Use it when you
+    want to see what to read next from a known starting point — the same
+    signal the agent uses via the find_related tool to skip an extra
+    search loop."""
+    parts = args.strip().split()
+    if not parts:
+        print("usage: /discover <entry_id> [top_k=8]")
+        return
+    entry_id = parts[0]
+    top_k = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 8
+    try:
+        out = await ctx.client.discover(entry_id, top_k=top_k)
+    except CliHttpError as e:
+        print(f"discover failed: HTTP {e.status} {e.payload}")
+        return
+    results = out.get("results") or []
+    if not results:
+        print(f"no relations recorded for {entry_id[:8]} yet "
+              f"(run /tend to populate signals).")
+        return
+    print(f"\n  seed: {entry_id[:8]}…")
+    for r in results:
+        bar = "█" * max(1, int(round(r["score"] * 50)))
+        direct = "*" if r.get("direct_edge_weight") else " "
+        print(
+            f"  {direct} {r['score']:.3f}  {bar:<50s}  "
+            f"{r['entry_id'][:8]}…  {r['display_name']}"
+        )
+    print(
+        f"\n  {len(results)} related entries  "
+        f"(* = direct edge from seed)"
+    )
+
+
 @command("export")
 async def cmd_export(ctx: CliContext, args: str) -> None:
     """/export [<conv_id>] [<dest.zip>]  — export a conversation report + cited files.

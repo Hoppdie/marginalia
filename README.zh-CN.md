@@ -55,10 +55,11 @@ marginalia 只是给它建索引。在 marginalia 之外动过文件后，跑 `/
 ```
 /help                                  列出所有命令
 /upload <本地> <远端>                  从 vault 外把文件拷进 vault
-/upload <本地> <远端> --name X         显式指定 display_name
+/upload "<含空格的路径>" "<远端>"       含空格的路径都加引号（本地、远端都一样）
 /check                                  对比 vault 磁盘和 db 的差异（只读）
 /ingest <vault_path>                    把 vault 内某个文件同步到 db
 /ingest --all                           整个 vault 一次性同步（git add -A 风格）
+/discover <entry_id> [N]                展示语料里跟这个文件关联的其它文件（随机游走）
 /tree                                  文件夹树
 /ls [parent_id]                        列子文件夹
 /cd <path>                             切换"远端 cwd"，影响 /upload 的相对路径
@@ -107,11 +108,33 @@ Raft 把 Paxos 拆成了三个相对独立的子问题...
 ```
 
 ```
-12 个 task / 12 个 agent 工具 / 8 条 ingest pipeline
+14 个 task / 13 个 agent 工具 / 8 条 ingest pipeline
   text / pdf（含扫描版 PDF 走 VLM OCR）/ image（VLM 输入自动下采样）
   docx / spreadsheet / log（含 logrotate 变体）
   archive（zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab，py7zz 50+ 格式）
 ```
+
+### 发现层（缩短 agent loop）
+
+agent 找到一份相关文件之后，发现层立刻把它的"邻居"喂回来——
+不用再跑一轮 search + read_files 才能找到相邻材料。三个挖掘 task
+从不同信号写 `entry_relations`，一个随机游走服务消费这张统一的图。
+
+```
+mine_session_cooccurrence    journal note 把 X 和 Y 归在同一会话里
+mine_tag_overlap             Jaccard ≥ 0.30 且共享 tag ≥ 2
+mine_citation_graph          X 和 Y 在同一个 agent 回答里被一起引用
+                ↓
+       entry_relations  (weight = observation_count，不分 source)
+                ↓
+   services.recommend.find_related   随机游走 + 重启 (alpha=0.15)
+                ↓
+   /discover <entry_id>           CLI 入口给用户用
+   find_related agent 工具         agent 入口——已经知道某条相关 entry
+                                  时先调它，省一轮 search
+```
+
+三个 miner 都在 `/tend` 链里夜里跑；随机游走是查询时算法，只读。
 
 完整设计见 [`design.md`](design.md)。架构概览随 samples 一起：
 `samples/architecture.md`。
@@ -211,26 +234,26 @@ MARGINALIA_SERVER=http://server.lan:8000
 # 跑单个 e2e 测试
 .venv/Scripts/python tests/test_agent_e2e.py
 
-# 跑所有 e2e（30 个）
+# 跑所有 e2e（33 个）
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-30 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
+33 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
 normalize_tags / enrich_tags / lifecycle / restructure / agent runtime /
 agent tools / user mgmt / CLI / image pipeline / user files / export /
 pdf / pdf-with-images / pdf-OCR / duckdb tools / worker daemon /
-mine_corpus_evidence / mine_session_cooccurrence / propose_views /
-refresh_entry_extra / container / git repo / compression / archive /
-office (docx + spreadsheet) / cli upgrade（含 embedded 模式 smoke）。
+mine_corpus_evidence / mine_session_cooccurrence / mine_tag_overlap /
+mine_citation_graph / discover（random walk + find_related 工具）/
+propose_views / refresh_entry_extra / container / git repo / compression /
+archive / office (docx + spreadsheet) / cli upgrade（含 embedded 模式 smoke）。
 
 ## 状态
 
 V1 端到端功能完整，但未在真实数据规模上压测。已知边界：
 
-- 推荐式后台挖掘（共现 / 随机漫游）在下一 cycle 计划里 ——
-  `mine_session_cooccurrence` 占位 task 已存在，但打分逻辑还很浅
-- 没有语义 / embedding 检索。召回靠 name + summary + tags + FTS5。
-  对个人库够用；如果你需要向量检索请另寻方案
+- 没有语义 / embedding 检索。召回靠 name + summary + tags + FTS5，
+  外加 `entry_relations` 上的随机游走发现层（cooccurrence + tag-overlap +
+  citation graph 三种信号合流）。对个人库够用；如果你需要向量检索请另寻方案
 - 音视频文件能接收但还没 pipeline，语音转写排在未来 cycle
 
 ## 许可证

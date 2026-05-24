@@ -61,10 +61,11 @@ a slash command; everything else is forwarded to the agent as chat.
 ```
 /help                                  list commands
 /upload <local> <remote>               copy a file from OUTSIDE the vault into it
-/upload <local> <remote> --name X      explicit display name
+/upload "<path with spaces>" "<remote>" quote any path containing spaces
 /check                                  diff vault disk vs db (read-only)
 /ingest <vault_path>                    sync one vault file with db
 /ingest --all                           sync the whole vault (git add -A style)
+/discover <entry_id> [N]                show entries the corpus has linked to it (random walk)
 /tree                                  folder tree
 /ls [parent_id]                        list folders
 /cd <path>                             change "remote cwd" for relative uploads
@@ -115,11 +116,37 @@ Three LLM roles (writers):
 ```
 
 ```
-12 tasks, 12 tools, 8 ingest pipelines
+14 tasks, 13 tools, 8 ingest pipelines
   text / pdf (incl. scanned-PDF OCR via VLM) / image (with VLM downscaling)
   docx / spreadsheet / log (incl. logrotate variants)
   archive (zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab / 50+ via py7zz)
 ```
+
+### Discovery (cuts agent loop count)
+
+When the agent has identified one relevant entry, the discovery layer
+hands it likely neighbours immediately — so the next step doesn't burn
+another search + read_files cycle to find sibling material. Three
+miners populate `entry_relations` from different signals; one
+random-walk service consumes the unified graph.
+
+```
+mine_session_cooccurrence    journal notes group X and Y in the same conversation
+mine_tag_overlap             Jaccard ≥ 0.30 with ≥ 2 shared tags
+mine_citation_graph          X and Y co-cited in the same agent answer
+                ↓
+       entry_relations  (weight = observation_count, any source)
+                ↓
+   services.recommend.find_related   random walk with restart, alpha=0.15
+                ↓
+   /discover <entry_id>           CLI surface for users
+   find_related agent tool        agent surface — call BEFORE running
+                                  another search when you know one
+                                  relevant entry
+```
+
+All three miners run nightly inside `/tend`; the random walk is query-
+time and reads only.
 
 For full design, see [`design.md`](design.md). For an architectural
 overview shipped with the samples: `samples/architecture.md`.
@@ -220,29 +247,29 @@ MARGINALIA_SERVER=http://server.lan:8000
 # run any single end-to-end test
 .venv/Scripts/python tests/test_agent_e2e.py
 
-# run all 30 e2e tests
+# run all 33 e2e tests
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-30 e2e tests cover upload, ingest, reflect, dispatcher, purge,
+33 e2e tests cover upload, ingest, reflect, dispatcher, purge,
 normalize_tags, enrich_tags, lifecycle, restructure, agent runtime,
 agent tools, user mgmt, CLI, image pipeline, user files, export, pdf,
 pdf-with-images, pdf-OCR, duckdb tools, worker daemon, mine_corpus_evidence,
-mine_session_cooccurrence, propose_views, refresh_entry_extra,
-container, git repo, compression / archive, office (docx + spreadsheet),
-and CLI upgrade (incl. embedded-mode smoke).
+mine_session_cooccurrence, mine_tag_overlap, mine_citation_graph,
+discover (random-walk + find_related tool), propose_views,
+refresh_entry_extra, container, git repo, compression / archive,
+office (docx + spreadsheet), and CLI upgrade (incl. embedded-mode smoke).
 
 ## Status
 
 Marginalia is at v1: end-to-end functional but not yet hardened against
 real-world data. Known gaps:
 
-- Recommendation-style background mining (cooccurrence, random walk) is
-  on the next-cycle list — `mine_session_cooccurrence` exists as a
-  placeholder task but the scoring is shallow.
 - No semantic / embedding retrieval. Recall is name + summary + tags +
-  FTS5 against ingested text. Adequate for personal libraries; not
-  intended to replace vector search if you need it.
+  FTS5 against ingested text, plus a random-walk discovery layer over
+  entry_relations (cooccurrence + tag-overlap + citation graph). Adequate
+  for personal libraries; not intended to replace vector search if you
+  need it.
 - Audio / video files are accepted but have no pipeline. Speech-to-text
   is a future cycle.
 

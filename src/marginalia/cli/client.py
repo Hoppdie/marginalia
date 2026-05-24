@@ -182,6 +182,16 @@ class MarginaliaClient:
         r.raise_for_status()
         return r.json()
 
+    async def discover(
+        self, entry_id: str, top_k: int = 8,
+    ) -> dict[str, Any]:
+        r = await self._http.get(
+            f"/v1/discover/{entry_id}", params={"top_k": top_k},
+        )
+        if r.status_code >= 400:
+            raise CliHttpError(r.status_code, r.json() if _is_json(r) else r.text)
+        return r.json()
+
     async def get_entry_metadata(self, entry_id: str) -> dict[str, Any]:
         r = await self._http.get(f"/v1/file-entries/{entry_id}/metadata")
         if r.status_code >= 400:
