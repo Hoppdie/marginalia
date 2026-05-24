@@ -44,18 +44,24 @@ async def search(
     return list(rows)
 
 
-async def recent_insights(
-    db: AsyncSession, *, cutoff: datetime, limit: int,
+async def recent_journal_for_snapshot(
+    db: AsyncSession, *, before: datetime, limit: int,
 ) -> list[Journal]:
-    """Live (non-superseded) `source_kind='insight'` journal rows newer than
-    `cutoff`, most recent first. Used by the agent's stable-context snapshot."""
+    """Most recent live journal rows whose `created_at < before`, both tiers
+    (insight + reflect_turn) mixed. Used by the agent's stable-context
+    snapshot.
+
+    Passing the session's `started_at` as `before` lets the snapshot stay
+    logically frozen for the duration of the session: rows the session
+    itself produces (always written after `started_at`) are naturally
+    excluded, with no JOIN to sessions/conversations.
+    """
     rows = (
         await db.execute(
             select(Journal)
             .where(
-                Journal.source_kind == "insight",
                 Journal.superseded_by_id.is_(None),
-                Journal.created_at >= cutoff,
+                Journal.created_at < before,
             )
             .order_by(Journal.created_at.desc())
             .limit(limit)

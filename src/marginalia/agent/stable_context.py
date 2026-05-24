@@ -2,17 +2,26 @@
 
 Each turn's LLM call gets the same identity-shaped system prompt prefix
 followed by a snapshot of the catalog tree + view list + tag vocabulary +
-recent journal headlines. Keeping this prefix stable across turns is the
+recent journal. Keeping this prefix stable across turns is the
 prompt-cache optimisation — adapters mark / auto-detect cache breakpoints.
 
-V1 implementation: rebuilt on every turn (cheap; the underlying queries
-take a handful of milliseconds). A future optimisation can periodise this
-through normalize_tags' completion hook.
+Journal recall is logically frozen for the duration of one session by
+filtering `created_at < session.started_at`. This both:
+  * excludes the session's own reflect_turn rows (which would otherwise
+    fold the agent's just-written notes back into its next plan-phase
+    prompt — a noisy self-loop, design [[journal-tiers]]), and
+  * keeps the journal slice stable across turns, so the prefix doesn't
+    drift mid-session.
+
+V1: rebuilt on every turn (cheap; the underlying queries take a handful
+of milliseconds). The catalog/views/tags slices are NOT logically frozen
+— per design.md §4.2 the offline writers don't run during live sessions,
+so in practice they don't drift.
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,13 +74,18 @@ execute 阶段直接把这段当回答返回。普通问题照常规划即可，
 TOP_LEVEL_CATALOGS_LIMIT = 50
 VIEWS_LIMIT = 30
 TAG_TOP_PER_FACET = 30
-INSIGHT_LIMIT = 30
-INSIGHT_RECENT_DAYS = 180
+RECENT_JOURNAL_LIMIT = 10
 
 
-async def build_stable_snapshot(db: AsyncSession) -> dict[str, Any]:
+async def build_stable_snapshot(
+    db: AsyncSession, *, session_started_at: datetime,
+) -> dict[str, Any]:
     """Build the structured snapshot the agent's stable system prompt
-    embeds. Keep small + deterministic so prompt cache works."""
+    embeds. Keep small + deterministic so prompt cache works.
+
+    `session_started_at` freezes the journal slice to rows written before
+    the current session began — see module docstring for rationale.
+    """
     top_cats = await catalogs_repo.list_live_top_level(
         db, limit=TOP_LEVEL_CATALOGS_LIMIT,
     )
@@ -103,27 +117,26 @@ async def build_stable_snapshot(db: AsyncSession) -> dict[str, Any]:
                 for tid, n, dc in rows
             ]
 
-    # Per [[journal-tiers]]: only `source_kind='insight'` rows are durable;
-    # `reflect_turn` rows are session-scoped and don't belong in the prefix.
-    cutoff = datetime.now(timezone.utc) - timedelta(days=INSIGHT_RECENT_DAYS)
-    insights = await journal_repo.recent_insights(
-        db, cutoff=cutoff, limit=INSIGHT_LIMIT,
+    # Logically frozen at session start — see module docstring.
+    rows = await journal_repo.recent_journal_for_snapshot(
+        db, before=session_started_at, limit=RECENT_JOURNAL_LIMIT,
     )
-    insight_view = [
+    journal_view = [
         {
             "id": j.id,
-            "note": (j.note or "")[:280],
+            "kind": j.source_kind,
+            "note": j.note or "",
             "entry_count": len(j.entry_ids or []),
             "tags": list(j.tags or []),
         }
-        for j in insights
+        for j in rows
     ]
 
     return {
         "catalog_top_level": catalog_view,
         "views": view_view,
         "tags_by_facet": tags_by_facet,
-        "insights": insight_view,
+        "recent_journal": journal_view,
     }
 
 

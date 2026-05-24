@@ -49,6 +49,7 @@ from marginalia.agent.stable_context import (
 )
 from marginalia.agent.tools import ToolContext, all_tool_defs, get_tool
 from marginalia.agent.types import AgentEvent, AgentTurnError, TurnUsage
+from marginalia.db.models import Session as SessionRow
 from marginalia.db.session import session_scope
 from marginalia.llm import (
     ChatMessage,
@@ -161,7 +162,14 @@ async def run_turn(
             db, session_id=session_id, turn_index=turn_index,
             user_message=user_message,
         )
-        snapshot = await build_stable_snapshot(db)
+        # Need session.started_at to freeze the journal slice in the
+        # snapshot — see stable_context module docstring.
+        session_row = await db.get(SessionRow, session_id)
+        if session_row is None:
+            raise AgentTurnError(f"session {session_id!r} not found")
+        snapshot = await build_stable_snapshot(
+            db, session_started_at=session_row.started_at,
+        )
         await db.commit()
         conversation_id = conv.id
 
