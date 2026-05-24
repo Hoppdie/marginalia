@@ -11,7 +11,7 @@ from marginalia.llm.openai_adapter import OpenAIAudioClient, OpenAIChatClient
 
 
 def _build_chat(profile: LlmProfile) -> ChatClient:
-    if profile.provider == "openai":
+    if profile.provider in ("openai", "openai-compatible"):
         return OpenAIChatClient(profile)
     if profile.provider == "anthropic":
         return AnthropicChatClient(profile)
@@ -41,7 +41,7 @@ def get_chat_client(profile: str = "ingest") -> ChatClient:
 def get_audio_client() -> AudioClient:
     settings = get_settings()
     p = resolve_profile(settings, "audio")
-    if p.provider != "openai":
+    if p.provider not in ("openai", "openai-compatible"):
         raise ValueError(
             "audio profile requires an OpenAI-compatible provider "
             "(Anthropic does not offer audio transcription)"

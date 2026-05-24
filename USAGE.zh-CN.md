@@ -54,14 +54,16 @@ marginalia init
 打开 `.env`,改这几行:
 
 ```ini
-LLM_DEFAULT_PROVIDER=openai
+LLM_DEFAULT_PROVIDER=openai-compatible
 LLM_DEFAULT_BASE_URL=https://api.deepseek.com/v1
 LLM_DEFAULT_API_KEY=sk-你的key
 LLM_DEFAULT_MODEL=deepseek-v4-flash
 ```
 
-DeepSeek 兼容 OpenAI API,所以 `provider=openai`,只是把 `BASE_URL`
-和 `MODEL` 换掉。
+DeepSeek 走的是 OpenAI 的协议格式,但不接受 OpenAI 的严格
+`json_schema` response_format。所以 `provider` 要写成 `openai-compatible`
+——adapter 会自动改用 `json_object`,把 schema 作为指令注入到 system
+prompt。只有指向 OpenAI 自家服务时才用 `openai`。
 
 `LLM_DEFAULT_*` 默认覆盖所有任务。需要的话也有按任务粒度的覆盖
 (`LLM_REFLECT_MODEL` / `LLM_INGEST_MODEL` 等),把"贵但低频"的环节

@@ -56,14 +56,17 @@ marginalia init
 Open `.env` and edit these lines:
 
 ```ini
-LLM_DEFAULT_PROVIDER=openai
+LLM_DEFAULT_PROVIDER=openai-compatible
 LLM_DEFAULT_BASE_URL=https://api.deepseek.com/v1
 LLM_DEFAULT_API_KEY=sk-your-key
 LLM_DEFAULT_MODEL=deepseek-v4-flash
 ```
 
-DeepSeek is OpenAI-API-compatible, so `provider=openai` works — you just
-swap `BASE_URL` and `MODEL`.
+DeepSeek speaks the OpenAI wire protocol, but it doesn't accept OpenAI's
+strict `json_schema` response format. `openai-compatible` is the right
+provider value — the adapter falls back to plain `json_object` and
+injects the schema as a system-prompt instruction. Use plain `openai`
+only when pointing at OpenAI proper.
 
 `LLM_DEFAULT_*` covers everything by default. Per-task overrides exist
 (`LLM_REFLECT_MODEL`, `LLM_INGEST_MODEL`, etc.) for routing expensive

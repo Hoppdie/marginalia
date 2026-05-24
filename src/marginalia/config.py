@@ -8,7 +8,13 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-LlmProvider = Literal["openai", "anthropic"]
+LlmProvider = Literal["openai", "openai-compatible", "anthropic"]
+# "openai"            -> OpenAI proper (supports strict json_schema)
+# "openai-compatible" -> DeepSeek / Together / Groq / vllm / ollama. Same wire
+#                        protocol as OpenAI, but only the basic
+#                        response_format={"type":"json_object"} is supported,
+#                        so the adapter injects the schema as text instead.
+# "anthropic"         -> Anthropic Messages API.
 
 
 class Settings(BaseSettings):

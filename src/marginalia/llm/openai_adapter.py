@@ -7,10 +7,13 @@ Notes:
     `usage.prompt_tokens_details.cached_tokens` as `cache_read_tokens`.
   - OpenAI returns tool-call arguments as JSON STRINGS — we parse to dicts so
     callers see the same shape as Anthropic.
-  - Structured output uses `response_format={"type": "json_schema", ...}`
-    when `json_schema` is provided. We require a top-level "name" key the
-    same way OpenAI's strict mode expects; if the schema has no "name", we
-    inject one named "Result".
+  - Structured output behaviour depends on provider:
+      "openai"            -> response_format={"type":"json_schema","strict":true}
+                             with the supplied schema (OpenAI proper only).
+      "openai-compatible" -> response_format={"type":"json_object"} + the
+                             schema rendered as text in the system prompt
+                             (DeepSeek / Together / Groq / vllm / ollama
+                             don't accept the strict json_schema variant).
 """
 from __future__ import annotations
 
@@ -38,12 +41,19 @@ from marginalia.llm.types import (
 log = logging.getLogger(__name__)
 
 
+_OPENAI_PROVIDERS: tuple[str, ...] = ("openai", "openai-compatible")
+
+
 class OpenAIChatClient(ChatClient):
     def __init__(self, profile: LlmProfile) -> None:
-        if profile.provider != "openai":
-            raise ValueError(f"profile {profile.name} is not OpenAI")
+        if profile.provider not in _OPENAI_PROVIDERS:
+            raise ValueError(
+                f"profile {profile.name} is not OpenAI-shaped "
+                f"(provider={profile.provider!r})"
+            )
         self.profile_name = profile.name
         self.model = profile.model
+        self._supports_json_schema = profile.provider == "openai"
         self._client = AsyncOpenAI(api_key=profile.api_key, base_url=profile.base_url)
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
@@ -76,14 +86,30 @@ class OpenAIChatClient(ChatClient):
 
         if request.json_schema is not None:
             schema = request.json_schema
-            name = schema.get("title") or schema.get("name") or "Result"
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": name, "schema": schema, "strict": True},
-            }
+            if self._supports_json_schema:
+                name = schema.get("title") or schema.get("name") or "Result"
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": name, "schema": schema, "strict": True},
+                }
+            else:
+                kwargs["response_format"] = {"type": "json_object"}
+                self._inject_schema_into_system(messages, schema)
 
         resp = await self._client.chat.completions.create(**kwargs)
         return self._render_response(resp)
+
+    @staticmethod
+    def _inject_schema_into_system(messages: list[dict[str, Any]], schema: dict[str, Any]) -> None:
+        instruction = (
+            "Respond with ONLY a single JSON object that conforms to this JSON Schema. "
+            "No prose, no code fences.\n\nSchema:\n" + json.dumps(schema)
+        )
+        if messages and messages[0].get("role") == "system":
+            existing = messages[0].get("content") or ""
+            messages[0]["content"] = (existing + "\n\n" if existing else "") + instruction
+        else:
+            messages.insert(0, {"role": "system", "content": instruction})
 
     # --- request rendering --------------------------------------------------
 
@@ -202,8 +228,11 @@ class OpenAIChatClient(ChatClient):
 
 class OpenAIAudioClient(AudioClient):
     def __init__(self, profile: LlmProfile) -> None:
-        if profile.provider != "openai":
-            raise ValueError(f"profile {profile.name} is not OpenAI (audio requires OpenAI)")
+        if profile.provider not in _OPENAI_PROVIDERS:
+            raise ValueError(
+                f"profile {profile.name} is not OpenAI-shaped — audio requires "
+                f"an OpenAI-compatible provider (provider={profile.provider!r})"
+            )
         self.profile_name = profile.name
         self.model = profile.model
         self._client = AsyncOpenAI(api_key=profile.api_key, base_url=profile.base_url)
