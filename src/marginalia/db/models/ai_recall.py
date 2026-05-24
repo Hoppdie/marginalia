@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -50,9 +51,21 @@ class EntryRelation(Base, IdMixin):
         String(36), ForeignKey("file_entries.id", ondelete="CASCADE"), nullable=False
     )
     note: Mapped[str] = mapped_column(Text, nullable=False)
-    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="reflect")
+    source_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="reflect")
     last_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # vetted: NULL = not yet judged by vet_relations; True/False = LLM verdict.
+    # vetted_observation_count: snapshot of observation_count at vet time;
+    # used to decide when a vetted edge needs revisiting (when current count
+    # grows substantially beyond the snapshot).
+    vetted: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    vetted_reason: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    vetted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None,
+    )
+    vetted_observation_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

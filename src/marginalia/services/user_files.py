@@ -29,6 +29,8 @@ from marginalia.storage.base import StorageBackend
 
 SEARCH_LIMIT_DEFAULT = 25
 SEARCH_LIMIT_MAX = 100
+SEARCH_RELATED_TOP_K = 3      # neighbours surfaced per search hit
+METADATA_RELATED_TOP_K = 8    # neighbours surfaced on the single-entry page
 
 
 class EntryNotFoundError(Exception):
@@ -103,8 +105,35 @@ async def search_entries(
             "updated_at": (
                 entry.updated_at.isoformat() if entry.updated_at else None
             ),
+            "related_entries": await _related_entries_for(
+                session, entry.id, top_k=SEARCH_RELATED_TOP_K,
+            ),
         })
     return out
+
+
+async def _related_entries_for(
+    session: AsyncSession, entry_id: str, *, top_k: int,
+) -> list[dict[str, Any]]:
+    """Pre-fill list — vetted-only neighbours of `entry_id` from the
+    discovery layer, top-K by random walk score. Empty list if no
+    vetted relations exist (silent — agent treats it as "no neighbours
+    yet" rather than an error).
+
+    Surfacing this in search/get_metadata is the point of the discovery
+    layer: agents and CLI users see neighbours without having to ask
+    for them, which is what cuts the loop count we'd otherwise spend on
+    "search → see one match → search again for siblings"."""
+    from marginalia.services.recommend import find_related as _walk
+    rows = await _walk(session, seed_entry_id=entry_id, top_k=top_k)
+    return [
+        {
+            "entry_id": r.entry_id,
+            "display_name": r.display_name,
+            "score": round(r.score, 4),
+        }
+        for r in rows
+    ]
 
 
 # ---- metadata -------------------------------------------------------------
@@ -153,6 +182,9 @@ async def get_user_metadata(
         # the user even though it is technically AI-written. design.md
         # §14.3 #4 carves this out as the legitimate cross-boundary view.
         "summary": file_row.summary,
+        "related_entries": await _related_entries_for(
+            session, entry.id, top_k=METADATA_RELATED_TOP_K,
+        ),
     }
 
 

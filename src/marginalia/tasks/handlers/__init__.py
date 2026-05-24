@@ -9,6 +9,7 @@ from marginalia.tasks.handlers import mine_citation_graph  # noqa: F401
 from marginalia.tasks.handlers import mine_corpus_evidence  # noqa: F401
 from marginalia.tasks.handlers import mine_session_cooccurrence  # noqa: F401
 from marginalia.tasks.handlers import mine_tag_overlap  # noqa: F401
+from marginalia.tasks.handlers import vet_relations  # noqa: F401
 from marginalia.tasks.handlers import normalize_tags  # noqa: F401
 from marginalia.tasks.handlers import periodic_tick  # noqa: F401
 from marginalia.tasks.handlers import propose_views  # noqa: F401

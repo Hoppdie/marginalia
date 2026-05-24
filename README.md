@@ -65,7 +65,7 @@ a slash command; everything else is forwarded to the agent as chat.
 /check                                  diff vault disk vs db (read-only)
 /ingest <vault_path>                    sync one vault file with db
 /ingest --all                           sync the whole vault (git add -A style)
-/discover <entry_id> [N]                show entries the corpus has linked to it (random walk)
+/discover <entry_id> [N] [--all]        show entries the corpus has linked to it (random walk; --all = include unvetted)
 /tree                                  folder tree
 /ls [parent_id]                        list folders
 /cd <path>                             change "remote cwd" for relative uploads
@@ -116,7 +116,7 @@ Three LLM roles (writers):
 ```
 
 ```
-14 tasks, 13 tools, 8 ingest pipelines
+14 tasks, 12 tools, 8 ingest pipelines
   text / pdf (incl. scanned-PDF OCR via VLM) / image (with VLM downscaling)
   docx / spreadsheet / log (incl. logrotate variants)
   archive (zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab / 50+ via py7zz)
@@ -127,26 +127,34 @@ Three LLM roles (writers):
 When the agent has identified one relevant entry, the discovery layer
 hands it likely neighbours immediately — so the next step doesn't burn
 another search + read_files cycle to find sibling material. Three
-miners populate `entry_relations` from different signals; one
-random-walk service consumes the unified graph.
+miners + an LLM gate populate `entry_relations`, and the random-walk
+service consumes the gated graph; results are pre-filled into search
+and metadata responses so the agent never has to ask.
 
 ```
 mine_session_cooccurrence    journal notes group X and Y in the same conversation
 mine_tag_overlap             Jaccard ≥ 0.30 with ≥ 2 shared tags
 mine_citation_graph          X and Y co-cited in the same agent answer
                 ↓
-       entry_relations  (weight = observation_count, any source)
+       entry_relations (raw, source_kind tagged)
+                ↓
+   vet_relations              LLM gate — judges each pair on summary +
+                              tags + signal context; sets vetted=True/False
+                              + snapshot of observation_count for refresh
+                ↓
+       entry_relations.vetted=True (clean graph)
                 ↓
    services.recommend.find_related   random walk with restart, alpha=0.15
                 ↓
-   /discover <entry_id>           CLI surface for users
-   find_related agent tool        agent surface — call BEFORE running
-                                  another search when you know one
-                                  relevant entry
+   /discover <entry_id>            CLI surface for users
+   search/get_metadata.related_entries
+                                   pre-filled top-3 / top-8 in agent
+                                   API responses; no agent decision
+                                   needed
 ```
 
-All three miners run nightly inside `/tend`; the random walk is query-
-time and reads only.
+All four miners + vet run nightly inside `/tend`; the random walk and
+pre-fill are query-time and read-only.
 
 For full design, see [`design.md`](design.md). For an architectural
 overview shipped with the samples: `samples/architecture.md`.
@@ -247,18 +255,19 @@ MARGINALIA_SERVER=http://server.lan:8000
 # run any single end-to-end test
 .venv/Scripts/python tests/test_agent_e2e.py
 
-# run all 33 e2e tests
+# run all 35 e2e tests
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-33 e2e tests cover upload, ingest, reflect, dispatcher, purge,
+35 e2e tests cover upload, ingest, reflect, dispatcher, purge,
 normalize_tags, enrich_tags, lifecycle, restructure, agent runtime,
 agent tools, user mgmt, CLI, image pipeline, user files, export, pdf,
 pdf-with-images, pdf-OCR, duckdb tools, worker daemon, mine_corpus_evidence,
 mine_session_cooccurrence, mine_tag_overlap, mine_citation_graph,
-discover (random-walk + find_related tool), propose_views,
-refresh_entry_extra, container, git repo, compression / archive,
-office (docx + spreadsheet), and CLI upgrade (incl. embedded-mode smoke).
+vet_relations, related_entries pre-fill, discover (random-walk),
+propose_views, refresh_entry_extra, container, git repo, compression /
+archive, office (docx + spreadsheet), mirror, storage migrate, scan +
+sync, and CLI upgrade.
 
 ## Status
 

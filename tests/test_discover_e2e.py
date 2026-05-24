@@ -114,6 +114,13 @@ async def _seed():
                 source_kind=kind,
                 last_observed_at=now,
                 observation_count=weight,
+                # Pretend vet_relations already greenlit these — the
+                # walk algorithm itself is what we're testing here, not
+                # the gate. test_vet_relations_e2e covers the gate.
+                vetted=True,
+                vetted_reason="seeded as vetted for discover test",
+                vetted_at=now,
+                vetted_observation_count=weight,
                 created_at=now,
             ))
 
@@ -184,21 +191,19 @@ async def _main() -> None:
     assert empty == [], f"expected empty, got {empty}"
     print("[7] seed with no edges returns []")
 
-    # 8. find_related agent tool wraps the service.
-    from marginalia.agent.tools import get_tool
-    tool = get_tool("find_related")
-    assert tool is not None, "find_related tool should be registered"
+    # 8. include_unvetted=True walks the raw graph — useful for
+    #    /discover --all. With our seed all edges are vetted=True so
+    #    this should return the same set as the vetted-only walk.
     async with factory() as s:
-        out = await tool.handler(
-            s, ctx=None, args={"entry_id": ids["A"], "top_k": 3},
+        unvet = await find_related(
+            s, seed_entry_id=ids["A"], top_k=10, rng_seed=42,
+            include_unvetted=True,
         )
-    assert out["seed_entry_id"] == ids["A"]
-    assert out["count"] == 3
-    assert all(
-        "entry_id" in r and "score" in r and "direct_edge_weight" in r
-        for r in out["results"]
-    ), f"shape wrong: {out}"
-    print(f"[8] find_related tool returned {out['count']} entries")
+    unvet_ids = {r.entry_id for r in unvet}
+    assert ids["B"] in unvet_ids and ids["C"] in unvet_ids
+    assert ids["G"] not in unvet_ids, \
+        "soft-deleted G must stay out of unvetted walk too"
+    print(f"[8] include_unvetted walk works (returned {len(unvet)} entries)")
 
     # 9. Different source_kind edges all contribute. Verify by checking
     #    that B (cooccurrence) and C (tag_overlap) are both visited —

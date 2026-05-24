@@ -40,6 +40,7 @@ from marginalia.tasks.kinds import (
     KIND_PROPOSE_VIEWS,
     KIND_REFRESH_ENTRY_EXTRA,
     KIND_RESTRUCTURE_CATALOGS,
+    KIND_VET_RELATIONS,
 )
 from marginalia.utils.ids import new_id
 
@@ -52,8 +53,11 @@ router = APIRouter(tags=["tend"])
 # the three relation miners run in parallel-shape after structural settling
 # (each writes entry_relations from a different signal: cooccurrence reads
 # journals, tag_overlap reads entry_tags, citation_graph reads conversation
-# citations). propose_views consumes the unified relation graph; refresh
-# closes out using everything that came before.
+# citations). vet_relations runs after the miners — LLM gate on the raw
+# graph; only vetted=True edges are visible to find_related and the
+# related_entries pre-fill in search/get_metadata. propose_views runs
+# after vetting so it sees the clean graph; refresh closes out using
+# everything that came before.
 TEND_CHAIN: tuple[str, ...] = (
     KIND_NORMALIZE_TAGS,
     KIND_ENRICH_TAGS,
@@ -62,6 +66,7 @@ TEND_CHAIN: tuple[str, ...] = (
     KIND_MINE_SESSION_COOCCURRENCE,
     KIND_MINE_TAG_OVERLAP,
     KIND_MINE_CITATION_GRAPH,
+    KIND_VET_RELATIONS,
     KIND_PROPOSE_VIEWS,
     KIND_REFRESH_ENTRY_EXTRA,
 )

@@ -73,12 +73,18 @@ async def find_related(
     walk_length: int = DEFAULT_WALK_LENGTH,
     restart_alpha: float = DEFAULT_RESTART_ALPHA,
     rng_seed: int | None = None,
+    include_unvetted: bool = False,
 ) -> list[RelatedEntry]:
     """Run RWR from `seed_entry_id`. Returns at most `top_k` non-seed
     entries ordered by visit frequency.
 
+    By default only edges with vetted=True participate — those are the
+    ones the LLM gate (vet_relations task) has confirmed. Set
+    `include_unvetted=True` to walk over the raw mined graph; useful
+    for debugging or for the `/discover --all` CLI flag.
+
     `rng_seed` is for tests; production uses system RNG."""
-    edges = await _load_edges(db)
+    edges = await _load_edges(db, include_unvetted=include_unvetted)
     if seed_entry_id not in edges or not edges[seed_entry_id]:
         return []
 
@@ -123,28 +129,34 @@ async def find_related(
 
 async def _load_edges(
     db: AsyncSession,
+    *,
+    include_unvetted: bool = False,
 ) -> dict[str, list[tuple[str, int]]]:
     """Load entry_relations as adjacency list. Symmetric pairs: each
     relation is materialised as two edges so walks can go either way.
 
-    Filters to live entries — a relation that points at a soft-deleted
-    entry stays in the table (history) but shouldn't influence current
-    recommendations.
+    Filters:
+      - live entries only on side A (joined directly).
+      - live entries on side B via a second filter pass.
+      - vetted=True only, unless include_unvetted is set. Without
+        gating, statistical noise from the miners (catch-all tags,
+        passing references) shows up in recommendations.
     """
-    rows = (
-        await db.execute(
-            select(
-                EntryRelation.entry_a_id,
-                EntryRelation.entry_b_id,
-                EntryRelation.observation_count,
-            )
-            .join(
-                FileEntry,
-                FileEntry.id == EntryRelation.entry_a_id,
-            )
-            .where(FileEntry.deleted_at.is_(None))
+    base = (
+        select(
+            EntryRelation.entry_a_id,
+            EntryRelation.entry_b_id,
+            EntryRelation.observation_count,
         )
-    ).all()
+        .join(
+            FileEntry,
+            FileEntry.id == EntryRelation.entry_a_id,
+        )
+        .where(FileEntry.deleted_at.is_(None))
+    )
+    if not include_unvetted:
+        base = base.where(EntryRelation.vetted.is_(True))
+    rows = (await db.execute(base)).all()
     if not rows:
         return {}
 

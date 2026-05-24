@@ -38,6 +38,7 @@ from typing import Any, Mapping
 from sqlalchemy import select
 
 from marginalia.db.models import (
+    EntryRelation,
     EntryTag,
     FileEntry,
     Tag,
@@ -356,7 +357,8 @@ async def _build_candidate_clusters(
         seen_clusters: set[str] = set()
         candidates: list[dict[str, Any]] = []
 
-        # Walk tag combos of size min_tags from top_tags
+        # Source 1: tag-cooccurrence clusters. Walk tag combos of size
+        # min_tags from top_tags by doc_count.
         for combo in combinations(top_tags, min_tags):
             combo_set = frozenset(combo)
             cid = _cluster_id_of(list(combo))
@@ -380,11 +382,130 @@ async def _build_candidate_clusters(
                 "tag_ids": sorted(combo),
                 "tag_names": sorted(tag_name_by_id[t] for t in combo),
                 "entry_count": count,
+                "source": "tag_cooccurrence",
             })
             if len(candidates) >= max_clusters:
                 break
+
+        # Source 2: relation-graph clusters. Connected components on
+        # vetted=True entry_relations surface "tightly linked but
+        # catalog-scattered" entry groups the tag-only walk above
+        # might miss. Each component's union of tags becomes the
+        # cluster's candidate filter spec.
+        if len(candidates) < max_clusters:
+            relation_clusters = await _build_relation_clusters(
+                session,
+                entry_tags=entry_tags,
+                tag_name_by_id=tag_name_by_id,
+                min_entries=min_entries,
+                min_tags=min_tags,
+                evaluated_ids=evaluated_ids,
+                seen_clusters=seen_clusters,
+                existing_view_tag_sets=existing_view_tag_sets,
+                cap=max_clusters - len(candidates),
+            )
+            candidates.extend(relation_clusters)
         await session.commit()
     return candidates
+
+
+async def _build_relation_clusters(
+    session,
+    *,
+    entry_tags: dict[str, set[str]],
+    tag_name_by_id: dict[str, str],
+    min_entries: int,
+    min_tags: int,
+    evaluated_ids: set[str],
+    seen_clusters: set[str],
+    existing_view_tag_sets: list[frozenset[str]],
+    cap: int,
+) -> list[dict[str, Any]]:
+    """Find connected components on the vetted relation graph and turn
+    each into a candidate cluster.
+
+    The intuition: when several entries are tightly linked by vetted
+    cooccurrence/citation/tag-overlap signals AND share at least
+    min_tags tags, that's a "naturally clustered topic" the corpus is
+    telling us about — independent of whatever the tag-only walk
+    surfaces. Especially valuable when the cluster spans catalog
+    branches (bridging a topic across a structural boundary).
+
+    A component is only kept as a cluster if its members share a
+    common-enough tag set (>= min_tags) and have enough mass (>=
+    min_entries entries). The cluster's `filter_tag_ids` is the
+    intersection of tags across the component's members; the LLM
+    then accepts/rejects and renames as usual.
+    """
+    rows = (
+        await session.execute(
+            select(
+                EntryRelation.entry_a_id,
+                EntryRelation.entry_b_id,
+            ).where(EntryRelation.vetted.is_(True))
+        )
+    ).all()
+    if not rows:
+        return []
+
+    # Live entry filter: only walk edges whose endpoints are still in
+    # entry_tags (which already excludes soft-deleted + non-active).
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for a, b in rows:
+        if a not in entry_tags or b not in entry_tags:
+            continue
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        union(a, b)
+
+    # Bucket members by component root.
+    components: dict[str, list[str]] = {}
+    for eid in parent:
+        components.setdefault(find(eid), []).append(eid)
+
+    out: list[dict[str, Any]] = []
+    for members in components.values():
+        if len(members) < min_entries:
+            continue
+        # Intersection of tag sets — the cluster's "shared identity".
+        shared = set(entry_tags[members[0]])
+        for m in members[1:]:
+            shared &= entry_tags[m]
+            if len(shared) < min_tags:
+                break
+        if len(shared) < min_tags:
+            continue
+        # Cluster id is hash over (tag_ids + "rel" suffix) so the same
+        # tag set from two sources doesn't collide.
+        tag_ids = sorted(shared)
+        cid = _cluster_id_of(tag_ids) + "_rel"
+        if cid in seen_clusters or cid in evaluated_ids:
+            continue
+        if _is_covered(frozenset(tag_ids), existing_view_tag_sets):
+            continue
+        seen_clusters.add(cid)
+        out.append({
+            "cluster_id": cid,
+            "tag_ids": tag_ids,
+            "tag_names": sorted(tag_name_by_id[t] for t in tag_ids),
+            "entry_count": len(members),
+            "source": "relation_graph",
+        })
+        if len(out) >= cap:
+            break
+    return out
 
 
 def _is_covered(

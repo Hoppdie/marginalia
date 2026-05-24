@@ -300,30 +300,43 @@ async def cmd_info(ctx: CliContext, args: str) -> None:
 
 @command("discover")
 async def cmd_discover(ctx: CliContext, args: str) -> None:
-    """/discover <entry_id> [N]  — show entries the corpus has linked to it.
+    """/discover <entry_id> [N] [--all]  — show entries the corpus has linked to it.
 
     Backed by random-walk-with-restart over the entry_relations graph
-    (cooccurrence + tag overlap + citation co-citation). Use it when you
-    want to see what to read next from a known starting point — the same
-    signal the agent uses via the find_related tool to skip an extra
-    search loop."""
+    (cooccurrence + tag overlap + citation co-citation). By default only
+    LLM-vetted edges contribute — those are the relations vet_relations
+    has confirmed are real. Pass --all to walk the unvetted graph too
+    (useful for inspecting raw miner output before the /tend cycle has
+    vetted it)."""
     parts = args.strip().split()
     if not parts:
-        print("usage: /discover <entry_id> [top_k=8]")
+        print("usage: /discover <entry_id> [top_k=8] [--all]")
         return
     entry_id = parts[0]
-    top_k = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 8
+    include_unvetted = "--all" in parts
+    numeric = [p for p in parts[1:] if p.isdigit()]
+    top_k = int(numeric[0]) if numeric else 8
     try:
-        out = await ctx.client.discover(entry_id, top_k=top_k)
+        out = await ctx.client.discover(
+            entry_id, top_k=top_k, include_unvetted=include_unvetted,
+        )
     except CliHttpError as e:
         print(f"discover failed: HTTP {e.status} {e.payload}")
         return
     results = out.get("results") or []
     if not results:
-        print(f"no relations recorded for {entry_id[:8]} yet "
-              f"(run /tend to populate signals).")
+        if include_unvetted:
+            print(f"no relations recorded for {entry_id[:8]} yet "
+                  f"(run /tend to populate signals).")
+        else:
+            print(
+                f"no vetted relations for {entry_id[:8]}.\n"
+                f"  raw signals may exist — try /discover {entry_id[:8]} --all\n"
+                f"  to see them, or run /tend so vet_relations evaluates them."
+            )
         return
-    print(f"\n  seed: {entry_id[:8]}…")
+    mode = " (unvetted)" if include_unvetted else ""
+    print(f"\n  seed: {entry_id[:8]}…{mode}")
     for r in results:
         bar = "█" * max(1, int(round(r["score"] * 50)))
         direct = "*" if r.get("direct_edge_weight") else " "

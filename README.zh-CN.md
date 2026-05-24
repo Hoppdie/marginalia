@@ -59,7 +59,7 @@ marginalia 只是给它建索引。在 marginalia 之外动过文件后，跑 `/
 /check                                  对比 vault 磁盘和 db 的差异（只读）
 /ingest <vault_path>                    把 vault 内某个文件同步到 db
 /ingest --all                           整个 vault 一次性同步（git add -A 风格）
-/discover <entry_id> [N]                展示语料里跟这个文件关联的其它文件（随机游走）
+/discover <entry_id> [N] [--all]        展示语料里跟这个文件关联的其它文件（随机游走；--all = 包含未审核边）
 /tree                                  文件夹树
 /ls [parent_id]                        列子文件夹
 /cd <path>                             切换"远端 cwd"，影响 /upload 的相对路径
@@ -108,7 +108,7 @@ Raft 把 Paxos 拆成了三个相对独立的子问题...
 ```
 
 ```
-14 个 task / 13 个 agent 工具 / 8 条 ingest pipeline
+14 个 task / 12 个 agent 工具 / 8 条 ingest pipeline
   text / pdf（含扫描版 PDF 走 VLM OCR）/ image（VLM 输入自动下采样）
   docx / spreadsheet / log（含 logrotate 变体）
   archive（zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab，py7zz 50+ 格式）
@@ -118,23 +118,32 @@ Raft 把 Paxos 拆成了三个相对独立的子问题...
 
 agent 找到一份相关文件之后，发现层立刻把它的"邻居"喂回来——
 不用再跑一轮 search + read_files 才能找到相邻材料。三个挖掘 task
-从不同信号写 `entry_relations`，一个随机游走服务消费这张统一的图。
+从不同信号写 `entry_relations`，一个 LLM gate（vet_relations）做
+语义审核，随机游走服务消费**已审核**的图，结果直接预填进 search /
+get_metadata 的响应里——agent 完全不用决策。
 
 ```
 mine_session_cooccurrence    journal note 把 X 和 Y 归在同一会话里
 mine_tag_overlap             Jaccard ≥ 0.30 且共享 tag ≥ 2
 mine_citation_graph          X 和 Y 在同一个 agent 回答里被一起引用
                 ↓
-       entry_relations  (weight = observation_count，不分 source)
+       entry_relations (原始信号，按 source_kind 区分)
+                ↓
+   vet_relations              LLM gate——读两端 summary + tag + 信号
+                              来源，判定 vetted=True/False；记录
+                              observation_count 快照用于增长后重审
+                ↓
+       entry_relations.vetted=True（干净图）
                 ↓
    services.recommend.find_related   随机游走 + 重启 (alpha=0.15)
                 ↓
    /discover <entry_id>           CLI 入口给用户用
-   find_related agent 工具         agent 入口——已经知道某条相关 entry
-                                  时先调它，省一轮 search
+   search/get_metadata.related_entries
+                                  自动在响应里预填 top-3 / top-8 邻居，
+                                  agent 不用调任何工具就能看到
 ```
 
-三个 miner 都在 `/tend` 链里夜里跑；随机游走是查询时算法，只读。
+四个挖掘 + vet 都在 `/tend` 链里夜里跑；随机游走和预填是查询时算法，只读。
 
 完整设计见 [`design.md`](design.md)。架构概览随 samples 一起：
 `samples/architecture.md`。
@@ -234,18 +243,19 @@ MARGINALIA_SERVER=http://server.lan:8000
 # 跑单个 e2e 测试
 .venv/Scripts/python tests/test_agent_e2e.py
 
-# 跑所有 e2e（33 个）
+# 跑所有 e2e（35 个）
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-33 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
+35 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
 normalize_tags / enrich_tags / lifecycle / restructure / agent runtime /
 agent tools / user mgmt / CLI / image pipeline / user files / export /
 pdf / pdf-with-images / pdf-OCR / duckdb tools / worker daemon /
 mine_corpus_evidence / mine_session_cooccurrence / mine_tag_overlap /
-mine_citation_graph / discover（random walk + find_related 工具）/
-propose_views / refresh_entry_extra / container / git repo / compression /
-archive / office (docx + spreadsheet) / cli upgrade（含 embedded 模式 smoke）。
+mine_citation_graph / vet_relations / related_entries 预填 /
+discover（random walk）/ propose_views / refresh_entry_extra /
+container / git repo / compression / archive / office (docx + spreadsheet) /
+mirror / storage migrate / scan + sync / cli upgrade。
 
 ## 状态
 

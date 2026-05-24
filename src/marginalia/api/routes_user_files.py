@@ -39,12 +39,16 @@ async def search(
 async def discover(
     entry_id: str,
     top_k: int = Query(default=8, ge=1, le=30),
+    include_unvetted: bool = Query(default=False),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Random-walk recommendation from a seed entry. Drives both the
-    `/discover` REPL command and the `find_related` agent tool."""
+    """Random-walk recommendation from a seed entry. Drives the
+    `/discover` REPL command and the related_entries pre-fill in
+    search/get_metadata. Vetted edges only by default; pass
+    include_unvetted=true to walk the raw graph."""
     rows = await find_related(
         session, seed_entry_id=entry_id, top_k=top_k,
+        include_unvetted=include_unvetted,
     )
     return {
         "seed_entry_id": entry_id,

@@ -184,9 +184,13 @@ class MarginaliaClient:
 
     async def discover(
         self, entry_id: str, top_k: int = 8,
+        include_unvetted: bool = False,
     ) -> dict[str, Any]:
+        params: dict[str, Any] = {"top_k": top_k}
+        if include_unvetted:
+            params["include_unvetted"] = "true"
         r = await self._http.get(
-            f"/v1/discover/{entry_id}", params={"top_k": top_k},
+            f"/v1/discover/{entry_id}", params=params,
         )
         if r.status_code >= 400:
             raise CliHttpError(r.status_code, r.json() if _is_json(r) else r.text)
