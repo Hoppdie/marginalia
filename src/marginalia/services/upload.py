@@ -40,6 +40,7 @@ from marginalia.services.folders import (
     split_remote_path,
 )
 from marginalia.storage.base import StorageBackend
+from marginalia.storage.mirror import MirrorStorage
 from marginalia.tasks.enqueue import enqueue
 from marginalia.tasks.kinds import KIND_INGEST_FILE
 from marginalia.utils.hashing import StreamHasher
@@ -186,27 +187,42 @@ async def upload(
 
     # --- stream → storage at a tentative key (we don't yet know if dedup hits)
     tentative_file_id = new_id()
-    storage_key = _make_storage_key(tentative_file_id)
+    tentative_storage_key = _make_storage_key(tentative_file_id)
+    folder_display_path = (
+        "/" + "/".join(folder_segments) if folder_segments else None
+    )
     hasher = StreamHasher(stream)
-    await storage.put(storage_key, hasher.__aiter__(), content_type=content_type)
+    storage_key = await storage.put(
+        tentative_storage_key, hasher.__aiter__(),
+        content_type=content_type,
+        display_name=desired_name,
+        folder_path=folder_display_path,
+    )
     sha256 = hasher.hexdigest
     size = hasher.size
 
     now = datetime.now(timezone.utc)
 
-    existing_file = (
-        await session.execute(select(File).where(File.sha256 == sha256))
-    ).scalar_one_or_none()
+    # In mirror mode each upload gets its own file row — dedup is OFF
+    # because the user explicitly opted into "files I can see in Finder
+    # are the files I have". Sharing a file row across two folders
+    # would require either symlinks (cross-platform pain) or a single
+    # canonical disk path (which contradicts the mirror promise).
+    is_mirror = isinstance(storage, MirrorStorage)
 
-    if existing_file is not None:
-        await storage.delete(storage_key)
-        return await _create_dedup_entry(
-            session,
-            file=existing_file,
-            folder_id=folder_id,
-            desired_name=desired_name,
-            now=now,
-        )
+    if not is_mirror:
+        existing_file = (
+            await session.execute(select(File).where(File.sha256 == sha256))
+        ).scalar_one_or_none()
+        if existing_file is not None:
+            await storage.delete(storage_key)
+            return await _create_dedup_entry(
+                session,
+                file=existing_file,
+                folder_id=folder_id,
+                desired_name=desired_name,
+                now=now,
+            )
 
     return await _create_new_file_entry(
         session,

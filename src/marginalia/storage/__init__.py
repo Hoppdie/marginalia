@@ -14,12 +14,15 @@ from marginalia.storage.decompress import (
     open_archive,
 )
 from marginalia.storage.local import LocalStorage
+from marginalia.storage.mirror import MirrorStorage
 from marginalia.storage.s3 import S3Storage
 
 
 @lru_cache(maxsize=1)
 def get_storage() -> StorageBackend:
     settings = get_settings()
+    if settings.storage_backend == "mirror":
+        return MirrorStorage(settings.mirror_vault_root)
     if settings.storage_backend == "local":
         return LocalStorage(settings.local_storage_root)
     return S3Storage(
@@ -31,8 +34,15 @@ def get_storage() -> StorageBackend:
     )
 
 
+def reset_storage_cache() -> None:
+    """Test helper — reset the lru_cache so tests can swap backends
+    between cases."""
+    get_storage.cache_clear()
+
+
 __all__ = [
-    "StorageBackend", "LocalStorage", "S3Storage", "get_storage",
+    "StorageBackend", "LocalStorage", "MirrorStorage", "S3Storage",
+    "get_storage", "reset_storage_cache",
     "open_archive", "iter_archive_members",
     "ArchiveMember", "ArchiveSession",
     "detect_compression", "is_archive_suffix",

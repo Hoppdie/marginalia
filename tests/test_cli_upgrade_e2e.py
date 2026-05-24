@@ -293,6 +293,7 @@ def test_repl_fallback_when_not_tty() -> None:
     sandbox.mkdir(parents=True)
     os.environ["SQLITE_PATH"] = str(sandbox / "marginalia.db")
     os.environ["LOCAL_STORAGE_ROOT"] = str(sandbox / "objects")
+os.environ["STORAGE_BACKEND"] = "local"
     os.environ["WORKER_ENABLED"] = "false"
     os.environ["LLM_DEFAULT_API_KEY"] = "sk-fake"
     os.environ["LLM_DEFAULT_MODEL"] = "fake-model"

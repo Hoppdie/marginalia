@@ -27,7 +27,9 @@ class LocalStorage(StorageBackend):
         *,
         size: int | None = None,
         content_type: str | None = None,
-    ) -> None:
+        display_name: str | None = None,
+        folder_path: str | None = None,
+    ) -> str:
         target = self._path(key)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(target.suffix + ".part")
@@ -35,6 +37,12 @@ class LocalStorage(StorageBackend):
             async for chunk in stream:
                 await f.write(chunk)
         os.replace(tmp, target)
+        return key
+
+    async def rename(self, old_key: str, new_key: str) -> str:
+        # UUID-flat: rename is a no-op. Storage key never changes for
+        # local-mode files.
+        return old_key
 
     async def get(self, key: str) -> AsyncIterator[bytes]:
         async with aiofiles.open(self._path(key), "rb") as f:

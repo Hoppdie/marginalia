@@ -38,7 +38,9 @@ class S3Storage(StorageBackend):
         *,
         size: int | None = None,
         content_type: str | None = None,
-    ) -> None:
+        display_name: str | None = None,
+        folder_path: str | None = None,
+    ) -> str:
         buf = bytearray()
         async for chunk in stream:
             buf.extend(chunk)
@@ -47,6 +49,12 @@ class S3Storage(StorageBackend):
             if content_type:
                 kwargs["ContentType"] = content_type
             await s3.put_object(**kwargs)
+        return key
+
+    async def rename(self, old_key: str, new_key: str) -> str:
+        # UUID-flat: rename is a no-op. Storage key never changes for
+        # objects already addressed by UUID.
+        return old_key
 
     async def get(self, key: str) -> AsyncIterator[bytes]:
         async with self._client() as s3:

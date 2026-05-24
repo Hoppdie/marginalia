@@ -86,7 +86,11 @@ class File(Base, IdMixin, TimestampMixin):
     )
 
     storage_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # NOT unique: mirror backend has dedup OFF and intentionally creates
+    # multiple file rows with the same sha256 (one per upload, even of
+    # the same bytes to different folders). Local backend still enforces
+    # uniqueness implicitly via its dedup logic in services/upload.
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     original_ext: Mapped[str | None] = mapped_column(String(32), nullable=True)

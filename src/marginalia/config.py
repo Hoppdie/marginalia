@@ -21,12 +21,23 @@ class Settings(BaseSettings):
 
     app_env: str = "dev"
 
+    # Single root for all on-disk state (db, library, caches). Default
+    # is ~/Marginalia. Per-component overrides below take precedence
+    # when set; otherwise everything sits under marginalia_home/.
+    marginalia_home: str = ""  # resolved to ~/Marginalia at runtime
+
     db_backend: Literal["sqlite", "postgres"] = "sqlite"
-    sqlite_path: str = "./data/marginalia.db"
+    sqlite_path: str = ""  # default: <home>/marginalia.db
     postgres_dsn: str = "postgresql+asyncpg://marginalia:marginalia@localhost:5432/marginalia"
 
-    storage_backend: Literal["local", "s3"] = "local"
-    local_storage_root: str = "./data/objects"
+    # mirror = folder-tree on disk matching the user's intent; default.
+    # local  = UUID-flat object pool; faster, dedup-on, less human-friendly.
+    # s3     = remote object storage for multi-host deployments.
+    storage_backend: Literal["mirror", "local", "s3"] = "mirror"
+    # Used only by local backend. Default: <home>/objects/.
+    local_storage_root: str = ""
+    # Used only by mirror backend. Default: <home>/library/.
+    mirror_vault_root: str = ""
     s3_endpoint_url: str | None = None
     s3_bucket: str = "marginalia"
     s3_access_key: str | None = None
@@ -107,6 +118,30 @@ def resolve_profile(settings: Settings, profile: str) -> LlmProfile:
     )
 
 
+def _default_home() -> str:
+    """`~/Marginalia` cross-platform. Used when MARGINALIA_HOME is unset."""
+    from pathlib import Path
+    return str(Path.home() / "Marginalia")
+
+
+def _resolve_paths(settings: "Settings") -> None:
+    """In-place: fill blank path fields from marginalia_home so the
+    user only needs to set MARGINALIA_HOME (or nothing) to relocate the
+    whole on-disk footprint."""
+    from pathlib import Path
+    home = settings.marginalia_home or _default_home()
+    home_path = Path(home).expanduser()
+    settings.marginalia_home = str(home_path)
+    if not settings.sqlite_path:
+        settings.sqlite_path = str(home_path / "marginalia.db")
+    if not settings.local_storage_root:
+        settings.local_storage_root = str(home_path / "objects")
+    if not settings.mirror_vault_root:
+        settings.mirror_vault_root = str(home_path / "library")
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    _resolve_paths(s)
+    return s
