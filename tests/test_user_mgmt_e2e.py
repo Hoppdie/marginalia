@@ -12,11 +12,11 @@ Verifies:
     - DELETE /folders/{id} cascades to descendant folders + entries
 
   Entries:
-    - PATCH /file-entries/{id} rename
-    - PATCH /file-entries/{id} rename conflict + on_conflict=error
-    - PATCH /file-entries/{id} move + auto-rename
-    - PATCH /file-entries/{id} lifecycle whitelist (active/manual_active/manual_archived)
-    - PATCH /file-entries/{id} lifecycle reject demoted/archived
+    - PATCH /file-entries/{id}/name rename
+    - PATCH /file-entries/{id}/name rename conflict + on_conflict=error
+    - PATCH /file-entries/{id}/folder move + auto-rename
+    - PATCH /file-entries/{id}/lifecycle whitelist (active/manual_active/manual_archived)
+    - PATCH /file-entries/{id}/lifecycle reject demoted/archived
     - DELETE /file-entries/{id} sets deleted_at + purge_after
 
   Audit:
@@ -44,6 +44,8 @@ os.environ["SQLITE_PATH"] = str(_TEST_ROOT / "marginalia.db")
 os.environ["LOCAL_STORAGE_ROOT"] = str(_TEST_ROOT / "objects")
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["WORKER_ENABLED"] = "false"
+os.environ["LLM_DEFAULT_API_KEY"] = "sk-fake"
+os.environ["LLM_DEFAULT_MODEL"] = "fake-model"
 
 import httpx
 from httpx import ASGITransport
@@ -186,7 +188,7 @@ async def main():
 
             # ---- 6. Entry rename --------------------------------------
             # e3 was paper.txt in C. Rename it.
-            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}/name",
                               json={"display_name": "paper-v2.txt"})
             assert r.status_code == 200, r.text
             print("[6] entry rename:", r.json()["display_name"])
@@ -204,7 +206,7 @@ async def main():
                 )
                 s.add(e_clash); await s.commit()
 
-            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}/name",
                               json={"display_name": "conflict.txt",
                                     "on_conflict": "error"})
             assert r.status_code == 409, r.text
@@ -212,7 +214,7 @@ async def main():
                   r.json()["detail"]["error"])
 
             # auto-rename works:
-            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}/name",
                               json={"display_name": "conflict.txt",
                                     "on_conflict": "rename"})
             assert r.status_code == 200, r.text
@@ -225,17 +227,17 @@ async def main():
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             # e3 is alive in folder C (not affected by B cascade). Try
             # legal lifecycle changes:
-            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}/lifecycle",
                               json={"lifecycle": "manual_active"})
             assert r.status_code == 200, r.text
             assert r.json()["lifecycle"] == "manual_active"
-            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}/lifecycle",
                               json={"lifecycle": "manual_archived"})
             assert r.status_code == 200, r.text
             print("[8] lifecycle manual_archived OK")
 
             # Reject: user cannot directly set 'demoted' or 'archived'
-            r = await c.patch(f"/v1/file-entries/{seeded['e3']}",
+            r = await c.patch(f"/v1/file-entries/{seeded['e3']}/lifecycle",
                               json={"lifecycle": "demoted"})
             assert r.status_code == 400, r.text
             print("[8] reject demoted:", r.status_code)

@@ -30,6 +30,8 @@ os.environ["SQLITE_PATH"] = str(_TEST_ROOT / "marginalia.db")
 os.environ["LOCAL_STORAGE_ROOT"] = str(_TEST_ROOT / "objects")
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["WORKER_ENABLED"] = "false"  # we don't want a runner picking up tasks
+os.environ["LLM_DEFAULT_API_KEY"] = "sk-fake"
+os.environ["LLM_DEFAULT_MODEL"] = "fake-model"
 
 import httpx
 from httpx import ASGITransport

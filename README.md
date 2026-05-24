@@ -116,7 +116,7 @@ Three LLM roles (writers):
 ```
 
 ```
-14 tasks, 12 tools, 8 ingest pipelines
+19 tasks, 13 tools, 8 ingest pipelines
   text / pdf (incl. scanned-PDF OCR via VLM) / image (with VLM downscaling)
   docx / spreadsheet / log (incl. logrotate variants)
   archive (zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab / 50+ via py7zz)
@@ -153,8 +153,9 @@ mine_citation_graph          X and Y co-cited in the same agent answer
                                    needed
 ```
 
-All four miners + vet run nightly inside `/tend`; the random walk and
-pre-fill are query-time and read-only.
+All four miners + vet run on the periodic dispatcher (default daily;
+also kicked off by `/tend`). The random walk and pre-fill are
+query-time and read-only.
 
 For full design, see [`design.md`](design.md). For an architectural
 overview shipped with the samples: `samples/architecture.md`.

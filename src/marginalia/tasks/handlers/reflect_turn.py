@@ -44,6 +44,7 @@ from typing import Any, Mapping
 from sqlalchemy import select, update
 
 from marginalia.db.models import (
+    AuditEvent,
     Catalog,
     Conversation,
     EntryRelation,
@@ -61,7 +62,6 @@ from marginalia.llm import (
     TextBlock,
     get_chat_client,
 )
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import has_outcome, record_outcome
 from marginalia.tasks.kinds import task_handler
 from marginalia.utils.ids import new_id
@@ -521,7 +521,7 @@ async def _resolve_or_create_tag(
     )
     session.add(tag)
     await session.flush()
-    await write_event(
+    await AuditEvent.append(
         session,
         kind="tag_created",
         payload={"tag_id": tag.id, "name": name, "facet": facet, "source": "reflect"},

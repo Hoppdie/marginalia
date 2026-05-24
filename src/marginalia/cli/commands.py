@@ -22,9 +22,26 @@ class CliContext:
     """Mutable per-REPL state."""
     client: MarginaliaClient
     session_id: str | None = None
-    on_conflict: str = "rename"
     cwd_remote: str = "/"  # for resolving relative remote paths
     history: list[dict] = field(default_factory=list)
+    storage_backend: str = "?"  # filled from /health at startup
+    # Tab-completion caches. Populated as a side effect of user commands
+    # (search/ls/info/discover) — completion only suggests entries the
+    # user has already had on screen, mirroring shell-history intuition.
+    seen_entry_ids: dict[str, str] = field(default_factory=dict)  # id -> display_name
+    seen_folder_paths: set[str] = field(default_factory=set)
+    seen_tags: set[str] = field(default_factory=set)
+
+
+def remember_entry(ctx: CliContext, entry_id: str, display_name: str = "") -> None:
+    if entry_id:
+        ctx.seen_entry_ids[entry_id] = display_name or ctx.seen_entry_ids.get(entry_id, "")
+
+
+def remember_folder_path(ctx: CliContext, path: str) -> None:
+    if path:
+        p = path if path.endswith("/") else path + "/"
+        ctx.seen_folder_paths.add(p)
 
 
 CommandHandler = Callable[[CliContext, str], Awaitable[None]]
@@ -155,7 +172,7 @@ async def cmd_tree(ctx: CliContext, args: str) -> None:
     if args.strip().isdigit():
         max_depth = int(args.strip())
 
-    async def _walk(parent_id: str | None, depth: int, prefix: str) -> None:
+    async def _walk(parent_id: str | None, depth: int, prefix: str, path: str) -> None:
         if depth > max_depth:
             return
         out = await ctx.client.list_folders(parent_id=parent_id)
@@ -164,10 +181,15 @@ async def cmd_tree(ctx: CliContext, args: str) -> None:
             last = i == len(folders) - 1
             connector = "└── " if last else "├── "
             print(f"{prefix}{connector}{f['name']}  ({f['id'][:8]}…)")
-            await _walk(f["id"], depth + 1, prefix + ("    " if last else "│   "))
+            child_path = f"{path}{f['name']}/"
+            remember_folder_path(ctx, child_path)
+            await _walk(
+                f["id"], depth + 1, prefix + ("    " if last else "│   "),
+                child_path,
+            )
 
     print()
-    await _walk(None, 0, "")
+    await _walk(None, 0, "", "/")
     print()
 
 
@@ -215,7 +237,6 @@ async def cmd_upload(ctx: CliContext, args: str) -> None:
         out = await ctx.client.upload_file(
             local_path=local,
             remote_path=full_remote,
-            on_conflict=ctx.on_conflict,
         )
     except CliHttpError as e:
         print(f"upload failed: HTTP {e.status} {e.payload}")
@@ -227,17 +248,6 @@ async def cmd_upload(ctx: CliContext, args: str) -> None:
         + ("  (auto-renamed)" if out.get("auto_renamed") else "")
         + ("  (skipped)" if out.get("skipped") else "")
     )
-
-
-@command("on-conflict")
-async def cmd_on_conflict(ctx: CliContext, args: str) -> None:
-    """Set name-conflict policy (rename/error/skip)."""
-    arg = args.strip().lower()
-    if arg not in ("rename", "error", "skip"):
-        print(f"current: {ctx.on_conflict}. usage: /on-conflict rename|error|skip")
-        return
-    ctx.on_conflict = arg
-    print(f"on_conflict = {arg}")
 
 
 @command("search")
@@ -264,6 +274,8 @@ async def cmd_search(ctx: CliContext, args: str) -> None:
         if len(path) > 31:
             path = "…" + path[-30:]
         print(f"  {name:<36} {path:<32} {eid_short:<12}")
+        remember_entry(ctx, e["entry_id"], e["display_name"])
+        remember_folder_path(ctx, e["folder_path"])
     print()
 
 
@@ -279,6 +291,8 @@ async def cmd_info(ctx: CliContext, args: str) -> None:
     except CliHttpError as e:
         print(f"info failed: HTTP {e.status} {e.payload}")
         return
+    remember_entry(ctx, meta["entry_id"], meta["display_name"])
+    remember_folder_path(ctx, meta.get("folder_path") or "")
     summary = meta.get("summary") or "(not yet indexed)"
     size = meta.get("size_bytes") or 0
     print(f"""
@@ -296,6 +310,18 @@ async def cmd_info(ctx: CliContext, args: str) -> None:
   summary:
   {summary}
 """)
+    preview = meta.get("preview") or []
+    if preview:
+        print("  preview:")
+        for sec in preview:
+            title = sec.get("title") or "(untitled)"
+            body = sec.get("summary") or ""
+            print(f"    - {title}")
+            if body:
+                # Indent the body so it visually nests under its title.
+                for line in body.splitlines() or [body]:
+                    print(f"        {line}")
+        print()
 
 
 @command("discover")
@@ -344,6 +370,7 @@ async def cmd_discover(ctx: CliContext, args: str) -> None:
             f"  {direct} {r['score']:.3f}  {bar:<50s}  "
             f"{r['entry_id'][:8]}…  {r['display_name']}"
         )
+        remember_entry(ctx, r["entry_id"], r["display_name"])
     print(
         f"\n  {len(results)} related entries  "
         f"(* = direct edge from seed)"
@@ -352,7 +379,12 @@ async def cmd_discover(ctx: CliContext, args: str) -> None:
 
 @command("export")
 async def cmd_export(ctx: CliContext, args: str) -> None:
-    """/export [<conv_id>] [<dest.zip>]  — export a conversation report + cited files.
+    """/export [<conv_id>] [<dest>]  — export a conversation.
+
+    Output format follows the destination suffix:
+      *.md  → single markdown file with citations expanded inline
+      *.zip → archive with report.md, manifest.json, and reference files
+              (default if no extension given)
 
     Resolution order when conv_id is omitted:
       1. ctx.history's last conversation (this CLI's most recent chat)
@@ -377,23 +409,29 @@ async def cmd_export(ctx: CliContext, args: str) -> None:
                 return
             if latest is None:
                 print("no ended conversation found on the server.")
-                print("usage: /export <conv_id> [<dest.zip>]")
+                print("usage: /export <conv_id> [<dest.md|.zip>]")
                 return
             conv_id = latest["conversation_id"]
             preview = latest.get("user_message_preview") or ""
             print(f"(no id given; using server's most recent conversation: "
-                  f"{conv_id[:8]}… \"{preview}\")")
+                  f"{conv_id[:8]}... \"{preview}\")")
 
-    dest = Path(dest_str) if dest_str else (
-        Path.cwd() / f"conversation-{conv_id[:8]}.zip"
-    )
+    if dest_str is None:
+        dest = Path.cwd() / f"conversation-{conv_id[:8]}.zip"
+    else:
+        dest = Path(dest_str)
+    is_markdown = dest.suffix.lower() == ".md"
     try:
-        out = await ctx.client.export_conversation(conv_id, dest=dest)
+        if is_markdown:
+            out = await ctx.client.export_conversation_markdown(conv_id, dest=dest)
+        else:
+            out = await ctx.client.export_conversation(conv_id, dest=dest)
     except CliHttpError as e:
         print(f"export failed: HTTP {e.status} {e.payload}")
         return
+    fmt = "markdown" if is_markdown else "zip"
     print(
-        f"exported {out['bytes_written']:,} bytes -> {out['saved_to']}\n"
+        f"exported {out['bytes_written']:,} bytes ({fmt}) -> {out['saved_to']}\n"
         f"  citations: {out['citation_count']} "
         f"(missing: {out['missing_count']})"
     )
@@ -763,12 +801,44 @@ async def cmd_ingest(ctx: CliContext, args: str) -> None:
             if confirm not in ("y", "yes"):
                 print("cancelled.")
                 return
-        out = await apply_all(report)
+        def _progress(done: int, total: int, _path: Path) -> None:
+            # Single-line progress redraw. Last update overwrites itself
+            # so the terminal doesn't fill with N/M lines on big batches.
+            import sys as _sys
+            bar_w = 20
+            filled = int(round(bar_w * done / total)) if total else bar_w
+            bar = "█" * filled + "·" * (bar_w - filled)
+            _sys.stdout.write(f"\r  ingesting [{bar}] {done}/{total}")
+            _sys.stdout.flush()
+            if done == total:
+                _sys.stdout.write("\n")
+                _sys.stdout.flush()
+
+        out = await apply_all(report, progress=_progress)
         print(
             f"applied: ingested={out['ingested']} "
             f"modified={out['modified']} moved={out['moved']} "
             f"forgotten={out['forgotten']}"
         )
+        failures = out.get("failures") or []
+        if failures:
+            print(f"\n{len(failures)} item(s) failed:")
+            for f in failures:
+                print(f"  [{f.category}] {f.target}: {f.error}")
+
+        # Bulk ingest only admits the file (db row + bytes). Each entry
+        # then sits in the task queue waiting on LLM extraction. Surface
+        # the queue depth so users know how much work is pending.
+        try:
+            counts = await ctx.client.running_task_count()
+            queued = counts.get("running", 0) + counts.get("pending", 0)
+        except Exception:
+            queued = 0
+        if queued:
+            print(
+                f"\n{queued} ingest task(s) queued — they will run in the "
+                f"background. The prompt shows live count as `N busy`."
+            )
         return
 
     # Single-path form. Resolve, validate vault membership, route to
@@ -812,20 +882,30 @@ async def cmd_ingest(ctx: CliContext, args: str) -> None:
                         if p.relative_to(vault_root).as_posix() == rel), None)
 
     if new_match is not None:
-        eid = await adopt_disk_file(new_match, vault_root)
-        print(f"ingested {rel} → entry={eid[:8] if eid else '?'}")
+        try:
+            eid = await adopt_disk_file(new_match, vault_root)
+        except Exception as exc:  # noqa: BLE001
+            print(f"failed to ingest {rel}: {type(exc).__name__}: {exc}")
+            return
+        print(f"ingested {rel} → entry={eid[:8]}")
         return
     if mod_match is not None:
         # apply_modified expects a ScanReport — build a minimal one.
         sub = ScanReport(vault_root=vault_root,
                          modified=[mod_match])
-        n = await apply_modified(sub)
+        n, failures = await apply_modified(sub)
+        if failures:
+            print(f"failed to refresh {rel}: {failures[0].error}")
+            return
         print(f"refreshed {rel} (entry stays, ingest re-queued; n={n})")
         return
     if moved_match is not None:
         sub = ScanReport(vault_root=vault_root,
                          moved=[moved_match])
-        n = await apply_moved(sub)
+        n, failures = await apply_moved(sub)
+        if failures:
+            print(f"failed to update path {rel}: {failures[0].error}")
+            return
         print(f"updated db to match disk path {rel} (n={n})")
         return
     print(f"{rel} is already in sync.")

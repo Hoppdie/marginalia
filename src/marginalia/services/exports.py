@@ -186,6 +186,84 @@ def render_manifest(plan: ExportPlan) -> dict[str, Any]:
     }
 
 
+_INLINE_FOOTNOTE_RE = re.compile(
+    r"^\[\^([^\]]+)\]:\s*entry_id\s*=.*$",
+    re.MULTILINE,
+)
+
+
+def render_inline_markdown(plan: ExportPlan) -> str:
+    """Single-file markdown: agent_response with citation footnotes
+    rewritten to human-readable annotations.
+
+    The agent stores footnotes as `[^a]: entry_id=01abcd... - reason`.
+    For sharing or pasting into a notebook the raw entry_id is noise —
+    this function rewrites each footnote to:
+
+      [^a]: **Display name** — folder/path/  (entry 01abcdef)
+            > one-line summary (if available)
+            optional reason
+
+    Missing entries fall back to "(unavailable)" so the footnote still
+    renders rather than disappearing. The body text (`[^a]` markers) is
+    untouched, so standard markdown footnote rendering still works.
+    """
+    body = plan.agent_response or ""
+    if not plan.citations:
+        return _markdown_header(plan) + body
+
+    by_marker = {c.marker: c for c in plan.citations}
+
+    def _replace(m: re.Match[str]) -> str:
+        marker = m.group(1)
+        cite = by_marker.get(marker)
+        if cite is None:
+            return m.group(0)
+        return f"[^{marker}]: " + _format_citation(cite, plan.metadata_blobs)
+
+    rewritten = _INLINE_FOOTNOTE_RE.sub(_replace, body)
+    return _markdown_header(plan) + rewritten
+
+
+def _markdown_header(plan: ExportPlan) -> str:
+    """A small frontmatter-ish block so the exported file is readable
+    standalone — the original conversation context isn't in the prose."""
+    lines = ["---"]
+    lines.append(f"conversation_id: {plan.conversation_id}")
+    if plan.started_at:
+        lines.append(f"started_at: {plan.started_at}")
+    if plan.ended_at:
+        lines.append(f"ended_at: {plan.ended_at}")
+    lines.append("---\n")
+    if plan.user_message:
+        lines.append(f"**Question:** {plan.user_message.strip()}\n")
+    return "\n".join(lines) + "\n"
+
+
+def _format_citation(
+    cite: CitationRef, metadata_blobs: dict[str, dict[str, Any]],
+) -> str:
+    if cite.missing:
+        tail = f"  (entry {cite.entry_id[:8]} unavailable)"
+        if cite.reason:
+            tail += f" — {cite.reason}"
+        return f"_(reference removed)_{tail}"
+    name = cite.display_name or "(unnamed)"
+    meta = metadata_blobs.get(cite.entry_id) or {}
+    folder = meta.get("folder_path") or ""
+    short = cite.entry_id[:8]
+    head = f"**{name}** — `{folder}`  (entry {short})"
+    pieces = [head]
+    summary = (meta.get("summary") or "").strip()
+    if summary:
+        pieces.append(f"  > {summary}")
+    if cite.section_id:
+        pieces.append(f"  section: `{cite.section_id}`")
+    if cite.reason:
+        pieces.append(f"  {cite.reason.strip()}")
+    return "\n".join(pieces)
+
+
 def _safe_zip_name(name: str) -> str:
     """Strip path separators and control chars from a display_name so it's
     safe inside a zip without collisions across platforms."""

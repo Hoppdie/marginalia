@@ -18,8 +18,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marginalia.db.models import Folder
-from marginalia.services.audit import write_event
+from marginalia.db.models import AuditEvent, Folder
 from marginalia.utils.ids import new_id
 
 
@@ -140,7 +139,7 @@ async def _find_or_create_child(
     )
     session.add(folder)
     await session.flush()
-    await write_event(
+    await AuditEvent.append(
         session,
         kind="folder_created",
         payload={
@@ -253,8 +252,7 @@ async def rename_folder(
     old = f.name
     f.name = new_name
     f.updated_at = datetime.now(timezone.utc)
-    from marginalia.services.audit import write_event
-    await write_event(session, kind="folder_renamed", payload={
+    await AuditEvent.append(session, kind="folder_renamed", payload={
         "folder_id": f.id, "parent_id": f.parent_id,
         "old_name": old, "new_name": new_name,
     })
@@ -285,8 +283,7 @@ async def move_folder(
     old_parent = f.parent_id
     f.parent_id = new_parent_id
     f.updated_at = datetime.now(timezone.utc)
-    from marginalia.services.audit import write_event
-    await write_event(session, kind="folder_moved", payload={
+    await AuditEvent.append(session, kind="folder_moved", payload={
         "folder_id": f.id, "old_parent": old_parent, "new_parent": new_parent_id,
     })
     return f
@@ -305,7 +302,6 @@ async def soft_delete_folder(
     from datetime import timedelta
 
     from marginalia.db.models import FileEntry
-    from marginalia.services.audit import write_event
 
     f = await get_folder(session, folder_id)
     if f is None:
@@ -355,7 +351,7 @@ async def soft_delete_folder(
         e.purge_after = purge_at
         e.updated_at = now
 
-    await write_event(session, kind="folder_soft_deleted", payload={
+    await AuditEvent.append(session, kind="folder_soft_deleted", payload={
         "folder_id": f.id,
         "name": f.name,
         "descendant_folders_marked": n_folders,

@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = 60
     worker_heartbeat_seconds: int = 20
 
+    # Default policy when an upload / rename / move would collide with an
+    # existing display_name in the same folder. `rename` suffixes ` (1)`,
+    # `error` raises 409, `skip` returns the existing entry. Per-call
+    # overrides on `/v1/upload` and the file-entry endpoints win when set.
+    default_on_conflict: Literal["rename", "error", "skip"] = "rename"
+
     # --- LLM defaults (used when a profile leaves a field blank) ------------
     llm_default_provider: LlmProvider = "openai"
     llm_default_api_key: str | None = None
@@ -116,6 +122,42 @@ def resolve_profile(settings: Settings, profile: str) -> LlmProfile:
     return LlmProfile(
         name=p, provider=provider, api_key=api_key, base_url=base_url, model=model
     )
+
+
+class LlmConfigError(RuntimeError):
+    """Startup-time LLM configuration is incomplete or inconsistent."""
+
+
+# Profiles users actually rely on out of the box. `audio` is opt-in (only used
+# when a media pipeline calls transcription) so we don't require it.
+_REQUIRED_PROFILES = ("chat", "reflect", "ingest", "vision")
+
+
+def validate_llm_config(settings: Settings) -> None:
+    """Fail fast at startup if required LLM credentials are missing.
+
+    Without this, a freshly-installed Marginalia accepts `/upload` and `/chat`
+    requests but every task quietly errors when it first tries to call the
+    provider — the failure shows up in `task_outcomes`, not in the foreground.
+
+    Rule: each required profile must resolve to a non-empty api_key. A profile
+    can satisfy this either via its own `LLM_<PROFILE>_API_KEY` or by inheriting
+    `LLM_DEFAULT_API_KEY`.
+    """
+    missing: list[str] = []
+    for profile in _REQUIRED_PROFILES:
+        key = (
+            getattr(settings, f"llm_{profile}_api_key")
+            or settings.llm_default_api_key
+        )
+        if not key:
+            missing.append(profile)
+    if missing:
+        raise LlmConfigError(
+            "LLM api_key is not configured for required profile(s): "
+            f"{', '.join(missing)}. Set LLM_DEFAULT_API_KEY in .env, or set "
+            "the per-profile override LLM_<PROFILE>_API_KEY for each."
+        )
 
 
 def _default_home() -> str:

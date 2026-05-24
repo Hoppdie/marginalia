@@ -28,6 +28,7 @@ from typing import Any, Mapping
 from sqlalchemy import select, update
 
 from marginalia.db.models import (
+    AuditEvent,
     EntryTag,
     File,
     FileEntry,
@@ -41,7 +42,6 @@ from marginalia.llm import (
     TextBlock,
     get_chat_client,
 )
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -307,7 +307,7 @@ async def _process_one(
             .where(FileEntry.id == cand["entry_id"])
             .values(extra=new_extra, updated_at=_utcnow())
         )
-        await write_event(
+        await AuditEvent.append(
             session,
             kind="entry_extra_refreshed",
             payload={

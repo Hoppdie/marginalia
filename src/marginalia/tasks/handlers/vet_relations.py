@@ -38,16 +38,15 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from sqlalchemy import or_, select, update
 
-from marginalia.db.models import EntryRelation, File, FileEntry
+from marginalia.db.models import AuditEvent, EntryRelation, File, FileEntry
 from marginalia.db.session import session_scope
 from marginalia.llm import (
     ChatMessage, ChatRequest, TextBlock, get_chat_client,
 )
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -154,12 +153,15 @@ async def handle_vet_relations(payload: Mapping[str, Any]) -> None:
     yes_count = 0
     no_count = 0
     failed_count = 0
+    last_error: str | None = None
     client = get_chat_client("ingest")
 
     # Process in batches to amortise LLM overhead.
     for chunk_start in range(0, len(candidates), batch):
         chunk = candidates[chunk_start: chunk_start + batch]
-        verdicts = await _ask_llm(client, chunk)
+        verdicts, err = await _ask_llm(client, chunk)
+        if err is not None:
+            last_error = err
         if not verdicts:
             failed_count += len(chunk)
             continue
@@ -182,7 +184,7 @@ async def handle_vet_relations(payload: Mapping[str, Any]) -> None:
                         vetted_observation_count=cand["observation_count"],
                     )
                 )
-                await write_event(
+                await AuditEvent.append(
                     session,
                     kind="relation_vetted",
                     payload={
@@ -200,17 +202,53 @@ async def handle_vet_relations(payload: Mapping[str, Any]) -> None:
                     no_count += 1
             await session.commit()
 
+    # Total failure: nothing was vetted. Raise so the task is requeued and
+    # the failure surfaces in `task_outcomes` / `tasks.last_error` instead of
+    # being silently absorbed as a `noop`.
+    if yes_count == 0 and no_count == 0 and failed_count > 0:
+        msg = (
+            f"vet_relations: LLM returned no verdicts for any of "
+            f"{failed_count} candidates"
+        )
+        if last_error:
+            msg += f" (last error: {last_error})"
+        async with session_scope() as session:
+            await record_outcome(
+                session,
+                task_kind=KIND_VET_RELATIONS,
+                object_kind=GLOBAL_OBJECT_KIND, object_id=GLOBAL_OBJECT_ID,
+                outcome="error",
+                detail={
+                    "candidates": len(candidates),
+                    "failed": failed_count,
+                    "last_error": last_error,
+                },
+            )
+            await session.commit()
+        raise RuntimeError(msg)
+
+    # Partial failure (some pairs vetted, some not): record so the user can
+    # see degraded quality, but don't raise — committed work is real.
+    outcome: Literal["applied", "noop", "error"]
+    if failed_count > 0:
+        outcome = "error"
+    elif yes_count or no_count:
+        outcome = "applied"
+    else:
+        outcome = "noop"
+
     async with session_scope() as session:
         await record_outcome(
             session,
             task_kind=KIND_VET_RELATIONS,
             object_kind=GLOBAL_OBJECT_KIND, object_id=GLOBAL_OBJECT_ID,
-            outcome="applied" if (yes_count or no_count) else "noop",
+            outcome=outcome,
             detail={
                 "candidates": len(candidates),
                 "yes": yes_count,
                 "no": no_count,
                 "failed": failed_count,
+                "last_error": last_error,
                 "cap": cap,
                 "batch": batch,
             },
@@ -318,7 +356,12 @@ async def _fetch_candidates(
         return out
 
 
-async def _ask_llm(client, chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def _ask_llm(
+    client, chunk: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Returns (verdicts, error_message). On success error_message is None;
+    on failure verdicts is [] and error_message describes what went wrong so
+    the caller can surface it via record_outcome / task.last_error."""
     payload = {
         "candidates": [
             {
@@ -357,8 +400,8 @@ async def _ask_llm(client, chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ))
     except Exception as exc:  # noqa: BLE001
         log.warning("vet_relations: LLM call failed: %s", exc)
-        return []
+        return [], f"{type(exc).__name__}: {exc}"
     if resp.parsed_json is None:
         log.warning("vet_relations: LLM returned non-JSON output")
-        return []
-    return list(resp.parsed_json.get("verdicts") or [])
+        return [], "LLM returned non-JSON output"
+    return list(resp.parsed_json.get("verdicts") or []), None

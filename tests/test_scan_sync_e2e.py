@@ -124,6 +124,7 @@ async def _main() -> None:
     assert out["moved"] == 1
     assert out["modified"] == 1
     assert out["forgotten"] == 1
+    assert out["failures"] == [], f"unexpected failures: {out['failures']}"
 
     final = await scan_vault(_VAULT)
     assert final.total_changes == 0, \
@@ -149,7 +150,8 @@ async def _main() -> None:
     cross = await scan_vault(_VAULT)
     assert len(cross.moved) == 1, \
         f"expected 1 cross-folder moved, got {[(e.display_name, p) for e, p in cross.moved]}"
-    n_moved2 = await apply_moved(cross)
+    n_moved2, moved_failures = await apply_moved(cross)
+    assert moved_failures == [], f"unexpected failures: {moved_failures}"
     assert n_moved2 == 1, f"expected 1 cross-folder move applied, got {n_moved2}"
     after_cross = await scan_vault(_VAULT)
     assert after_cross.total_changes == 0

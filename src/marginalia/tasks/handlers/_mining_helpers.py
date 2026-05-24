@@ -1,0 +1,96 @@
+"""Shared helpers for mining handlers.
+
+Three miners (session_cooccurrence, tag_overlap, citation_graph) emit
+candidate edges with the same upsert shape:
+
+  - if (entry_a_id, entry_b_id) exists: bump observation_count by N,
+    update last_observed_at, audit kind=relation_mined action=incremented
+  - else: insert a fresh row with observation_count=N, audit
+    kind=relation_mined action=created
+
+Centralising this avoids three copies drifting (e.g. one miner forgetting
+to bump last_observed_at, leaving the TTL-based revet stale).
+
+corpus_evidence does NOT use this helper — it only inserts; its semantics
+("LLM judged this single piece of evidence relevant") is wrong to
+collapse with statistical observations.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal, Mapping
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from marginalia.db.models import AuditEvent, EntryRelation
+from marginalia.utils.ids import new_id
+
+UpsertAction = Literal["incremented", "created"]
+
+
+async def upsert_relation_pair(
+    session: AsyncSession,
+    *,
+    entry_a_id: str,
+    entry_b_id: str,
+    observation_add: int,
+    source_kind: str,
+    note: str,
+    now: datetime,
+    audit_extra: Mapping[str, Any] | None = None,
+) -> tuple[str, UpsertAction]:
+    """Upsert a single (a, b) edge. Caller must ensure a < b for stability.
+
+    Returns (relation_id, "incremented" | "created"). The miner-specific
+    audit_extra dict is merged into the relation_mined event payload so
+    each miner can attach its own signal data (jaccard score, journal
+    window, etc).
+    """
+    existing = (
+        await session.execute(
+            select(EntryRelation).where(
+                EntryRelation.entry_a_id == entry_a_id,
+                EntryRelation.entry_b_id == entry_b_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        await session.execute(
+            update(EntryRelation)
+            .where(EntryRelation.id == existing.id)
+            .values(
+                observation_count=(existing.observation_count or 0)
+                + observation_add,
+                last_observed_at=now,
+            )
+        )
+        rid = existing.id
+        action: UpsertAction = "incremented"
+    else:
+        rid = new_id()
+        session.add(EntryRelation(
+            id=rid,
+            entry_a_id=entry_a_id,
+            entry_b_id=entry_b_id,
+            note=note,
+            source_kind=source_kind,
+            last_observed_at=now,
+            observation_count=observation_add,
+            created_at=now,
+        ))
+        action = "created"
+
+    payload: dict[str, Any] = {
+        "relation_id": rid,
+        "entry_a_id": entry_a_id,
+        "entry_b_id": entry_b_id,
+        "source_kind": source_kind,
+        "observation_added": observation_add,
+        "action": action,
+    }
+    if audit_extra:
+        payload.update(audit_extra)
+    await AuditEvent.append(session, kind="relation_mined", payload=payload)
+    return rid, action

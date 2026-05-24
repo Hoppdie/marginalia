@@ -37,6 +37,7 @@ from typing import Any, Mapping
 from sqlalchemy import select
 
 from marginalia.db.models import (
+    AuditEvent,
     Catalog,
     EntryRelation,
     EntryTag,
@@ -52,7 +53,6 @@ from marginalia.llm import (
     TextBlock,
     get_chat_client,
 )
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -186,7 +186,7 @@ async def handle_mine_corpus_evidence(payload: Mapping[str, Any]) -> None:
                     created_at=_utcnow(),
                 ))
                 accepted += 1
-                await write_event(
+                await AuditEvent.append(
                     session, kind="relation_mined",
                     payload={
                         "relation_id": rel_id,

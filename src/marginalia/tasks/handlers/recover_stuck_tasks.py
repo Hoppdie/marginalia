@@ -23,9 +23,9 @@ from typing import Any, Mapping
 
 from sqlalchemy import select, update
 
+from marginalia.db.models import AuditEvent
 from marginalia.db.models.tasks import Task
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.tasks.kinds import KIND_RECOVER_STUCK_TASKS, task_handler
 
 log = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ async def handle_recover_stuck_tasks(payload: Mapping[str, Any]) -> None:
                         lease_expires_at=None,
                     )
                 )
-                await write_event(
+                await AuditEvent.append(
                     session,
                     kind="task_marked_dead",
                     task_id=t.id,
@@ -97,7 +97,7 @@ async def handle_recover_stuck_tasks(payload: Mapping[str, Any]) -> None:
                         scheduled_at=now,
                     )
                 )
-                await write_event(
+                await AuditEvent.append(
                     session,
                     kind="task_recovered",
                     task_id=t.id,

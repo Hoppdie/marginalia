@@ -182,10 +182,41 @@ async def get_user_metadata(
         # the user even though it is technically AI-written. design.md
         # §14.3 #4 carves this out as the legitimate cross-boundary view.
         "summary": file_row.summary,
+        "preview": _description_preview(file_row.description),
         "related_entries": await _related_entries_for(
             session, entry.id, top_k=METADATA_RELATED_TOP_K,
         ),
     }
+
+
+def _description_preview(
+    description: Any | None, *, max_sections: int = 3, max_chars: int = 320,
+) -> list[dict[str, str]]:
+    """Render the first few section summaries from `file_row.description`
+    so `/info` can show what the file is *about* without a separate
+    download. The librarian's section summaries are AI-written but the
+    same boundary carve-out as `summary` applies (design.md §14.3 #4).
+
+    Returns up to `max_sections` `{title, summary}` pairs. Truncates each
+    summary at `max_chars` so a verbose section can't blow up the panel.
+    Returns an empty list when description is missing or malformed.
+    """
+    if not isinstance(description, dict):
+        return []
+    sections = description.get("sections")
+    if not isinstance(sections, list):
+        return []
+    out: list[dict[str, str]] = []
+    for sec in sections[:max_sections]:
+        if not isinstance(sec, dict):
+            continue
+        title = str(sec.get("title") or "").strip()
+        summary = str(sec.get("summary") or "").strip()
+        if len(summary) > max_chars:
+            summary = summary[: max_chars - 1].rstrip() + "…"
+        if title or summary:
+            out.append({"title": title, "summary": summary})
+    return out
 
 
 # ---- download -------------------------------------------------------------

@@ -5,7 +5,21 @@
       "Bash(curl -sL \"https://api.github.com/repos/ssokolow/rar-test-files/contents/\")",
       "Bash(.venv/Scripts/python tests/test_archive_image_drilldown_e2e.py)",
       "Bash(.venv/Scripts/python tests/test_pdf_ocr_cap_e2e.py)",
-      "Bash(.venv/Scripts/python -c \"import rarfile; print\\('have rarfile'\\)\")"
+      "Bash(.venv/Scripts/python -c \"import rarfile; print\\('have rarfile'\\)\")",
+      "Bash(.venv/Scripts/python tests/test_periodic_coverage_e2e.py)",
+      "Bash(.venv/Scripts/python tests/test_dispatcher_e2e.py)",
+      "Bash(.venv/Scripts/python -c ' *)",
+      "Bash(.venv/Scripts/python tests/test_vet_relations_e2e.py)",
+      "Bash(.venv/Scripts/python tests/test_vet_relations_failure_e2e.py)",
+      "Bash(.venv/Scripts/python tests/test_scan_sync_e2e.py)",
+      "Bash(.venv/Scripts/python tests/test_sync_failure_e2e.py)",
+      "Bash(.venv/Scripts/python -c \"import marginalia.tasks.handlers; from marginalia.tasks.kinds import registered_kinds; ks=registered_kinds\\(\\); print\\(len\\(ks\\)\\); print\\('\\\\n'.join\\(ks\\)\\)\")",
+      "Bash(.venv/Scripts/python tests/test_user_mgmt_e2e.py)",
+      "Bash(.venv/Scripts/python tests/test_upload_e2e.py)",
+      "Bash(.venv/Scripts/python -c \"from marginalia.services import sync; print\\('ok', sync.adopt_disk_file\\)\")",
+      "Bash(.venv/Scripts/python *)",
+      "Bash(python *)",
+      "Bash(git add *)"
     ]
   }
 }

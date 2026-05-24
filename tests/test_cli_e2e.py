@@ -125,14 +125,9 @@ async def main() -> None:
         await dispatch(ctx, f"/upload {upload_local} sub/")
         print("[8] /cd + relative upload OK")
 
-        # --- 9. /on-conflict ---------------------------------------------
-        await dispatch(ctx, "/on-conflict skip")
-        assert ctx.on_conflict == "skip"
-        await dispatch(ctx, "/on-conflict invalid")  # no change
-        assert ctx.on_conflict == "skip"
-        await dispatch(ctx, "/on-conflict rename")
-        assert ctx.on_conflict == "rename"
-        print("[9] /on-conflict OK")
+        # --- 9. (the /on-conflict slash command was removed; the
+        #         server-side default is now driven by config setting
+        #         `default_on_conflict`. Nothing to test from the CLI.)
 
         # --- 10. chat (non-slash line) → opens session, runs turn --------
         assert ctx.session_id is None

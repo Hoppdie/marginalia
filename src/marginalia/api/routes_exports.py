@@ -33,6 +33,7 @@ from marginalia.services.exports import (
     ExportNotReadyError,
     build_export_plan,
     reference_zip_paths,
+    render_inline_markdown,
     render_manifest,
 )
 from marginalia.storage import get_storage
@@ -136,5 +137,39 @@ async def export_conversation(
     return StreamingResponse(
         _zip_stream(),
         media_type="application/zip",
+        headers=headers,
+    )
+
+
+@router.get("/conversations/{conversation_id}/export.md")
+async def export_conversation_markdown(
+    conversation_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Single-file markdown export with citations rewritten inline.
+
+    Each footnote is expanded to display-name + folder path + summary so
+    the file makes sense on its own — useful for pasting into a notebook
+    without unzipping the references bundle.
+    """
+    try:
+        plan = await build_export_plan(session, conversation_id=conversation_id)
+    except ConversationNotFoundError:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    except ExportNotReadyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    body = render_inline_markdown(plan)
+    filename = f"conversation-{conversation_id[:8]}.md"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Conversation-Id": conversation_id,
+        "X-Citation-Count": str(len(plan.citations)),
+        "X-Missing-Count": str(sum(1 for c in plan.citations if c.missing)),
+    }
+    from fastapi.responses import Response
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
         headers=headers,
     )

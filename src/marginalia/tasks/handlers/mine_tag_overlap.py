@@ -40,18 +40,17 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
-from marginalia.db.models import EntryRelation, EntryTag, FileEntry
+from marginalia.db.models import EntryTag, FileEntry
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
     record_outcome,
 )
+from marginalia.tasks.handlers._mining_helpers import upsert_relation_pair
 from marginalia.tasks.kinds import KIND_MINE_TAG_OVERLAP, task_handler
-from marginalia.utils.ids import new_id
 
 log = logging.getLogger(__name__)
 
@@ -152,70 +151,26 @@ async def handle_mine_tag_overlap(payload: Mapping[str, Any]) -> None:
             # to cooccurrence counts so the random-walk graph isn't
             # lopsided by signal source.
             obs_add = max(1, math.ceil(jaccard * 10))
-            existing = (
-                await session.execute(
-                    select(EntryRelation).where(
-                        EntryRelation.entry_a_id == a,
-                        EntryRelation.entry_b_id == b,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                await session.execute(
-                    update(EntryRelation)
-                    .where(EntryRelation.id == existing.id)
-                    .values(
-                        observation_count=
-                            (existing.observation_count or 0) + obs_add,
-                        last_observed_at=now,
-                    )
-                )
+            note = (
+                f"Tag overlap: {shared_count} shared tags, "
+                f"Jaccard {jaccard:.2f}."
+            )
+            _, action = await upsert_relation_pair(
+                session,
+                entry_a_id=a, entry_b_id=b,
+                observation_add=obs_add,
+                source_kind=SOURCE_KIND,
+                note=note,
+                now=now,
+                audit_extra={
+                    "jaccard": round(jaccard, 3),
+                    "shared_tags": shared_count,
+                },
+            )
+            if action == "incremented":
                 incremented += 1
-                await write_event(
-                    session,
-                    kind="relation_mined",
-                    payload={
-                        "relation_id": existing.id,
-                        "entry_a_id": a,
-                        "entry_b_id": b,
-                        "source_kind": SOURCE_KIND,
-                        "observation_added": obs_add,
-                        "jaccard": round(jaccard, 3),
-                        "shared_tags": shared_count,
-                        "action": "incremented",
-                    },
-                )
             else:
-                rel_id = new_id()
-                note = (
-                    f"Tag overlap: {shared_count} shared tags, "
-                    f"Jaccard {jaccard:.2f}."
-                )
-                session.add(EntryRelation(
-                    id=rel_id,
-                    entry_a_id=a,
-                    entry_b_id=b,
-                    note=note,
-                    source_kind=SOURCE_KIND,
-                    last_observed_at=now,
-                    observation_count=obs_add,
-                    created_at=now,
-                ))
                 new_relations += 1
-                await write_event(
-                    session,
-                    kind="relation_mined",
-                    payload={
-                        "relation_id": rel_id,
-                        "entry_a_id": a,
-                        "entry_b_id": b,
-                        "source_kind": SOURCE_KIND,
-                        "observation_added": obs_add,
-                        "jaccard": round(jaccard, 3),
-                        "shared_tags": shared_count,
-                        "action": "created",
-                    },
-                )
 
         await record_outcome(
             session,

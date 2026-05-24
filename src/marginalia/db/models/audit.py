@@ -6,9 +6,9 @@ runtime reads sessions/conversations to maintain rolling counters.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import (
     DateTime,
@@ -20,9 +20,11 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marginalia.db.models.base import Base, IdMixin
+from marginalia.utils.ids import new_id
 
 
 class AuditEvent(Base, IdMixin):
@@ -54,6 +56,36 @@ class AuditEvent(Base, IdMixin):
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     payload: Mapped[Any] = mapped_column(JSON, nullable=False, default=dict)
+
+    @classmethod
+    async def append(
+        cls,
+        session: AsyncSession,
+        *,
+        kind: str,
+        payload: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+        conversation_id: str | None = None,
+        task_id: str | None = None,
+        occurred_at: datetime | None = None,
+    ) -> "AuditEvent":
+        """Append one audit_events row in the caller's transaction.
+
+        Every state-changing DB op is paired with one of these in the same
+        transaction so the audit log can never disagree with reality.
+        Caller controls commit.
+        """
+        event = cls(
+            id=new_id(),
+            occurred_at=occurred_at or datetime.now(timezone.utc),
+            kind=kind,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            task_id=task_id,
+            payload=dict(payload or {}),
+        )
+        session.add(event)
+        return event
 
 
 class Session(Base, IdMixin):

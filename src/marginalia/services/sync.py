@@ -9,17 +9,27 @@ Three operations the user can run after `/check`:
 Each operation is independent and idempotent — safe to re-run after
 partial failure. The /sync command does ingest_all_new + apply_moved +
 forget_all_missing in one call.
+
+Failure handling: each per-item failure is caught, rolled back, AND
+collected into a `SyncFailure` returned to the caller. Previously
+failures were only logged, so /ingest --all could report
+"ingested=0 modified=0 ..." without any signal that 50 files quietly
+failed mid-batch.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import mimetypes
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.db.engine import get_session_factory
-from marginalia.db.models import FileEntry
+from marginalia.db.models import AuditEvent, File, FileEntry
 from marginalia.services.entries import (
     move_entry,
     rename_entry,
@@ -30,14 +40,28 @@ from marginalia.services.folders import resolve_or_create_folder
 from marginalia.services.scan import ScanReport
 from marginalia.services.upload import upload as upload_service
 from marginalia.storage import MirrorStorage, get_storage
+from marginalia.tasks.enqueue import enqueue
+from marginalia.tasks.kinds import KIND_INGEST_FILE
+from marginalia.utils.ids import new_id
 
 log = logging.getLogger(__name__)
 
 
-async def adopt_disk_file(path: Path, vault_root: Path) -> str | None:
+@dataclass(slots=True)
+class SyncFailure:
+    """One per-item failure during apply_*. Surfaced to CLI for display."""
+    category: str  # 'new' | 'moved' | 'modified' | 'missing'
+    target: str    # path string or entry display_name
+    error: str
+
+
+async def adopt_disk_file(path: Path, vault_root: Path) -> str:
     """Register a single disk-side file in the db without re-writing
     the bytes (file is already where mirror wants it). Returns the
-    new entry_id or None on failure.
+    new entry_id.
+
+    Raises on failure — callers that batch (`ingest_all_new`) catch and
+    accumulate; CLI single-file caller surfaces the message directly.
 
     Used by both `/ingest --all` (called once per `report.new` entry)
     and `/ingest <path>` (single-file adoption from inside the vault).
@@ -47,16 +71,6 @@ async def adopt_disk_file(path: Path, vault_root: Path) -> str | None:
         raise RuntimeError(
             "adopt_disk_file is only meaningful when STORAGE_BACKEND=mirror"
         )
-
-    from datetime import datetime, timezone
-    import hashlib
-    import mimetypes
-    from marginalia.db.models import File, FileEntry
-    from marginalia.services.audit import write_event
-    from marginalia.services.folders import resolve_or_create_folder
-    from marginalia.tasks.enqueue import enqueue
-    from marginalia.tasks.kinds import KIND_INGEST_FILE
-    from marginalia.utils.ids import new_id
 
     rel = path.relative_to(vault_root).as_posix()
     folder_segments = list(path.relative_to(vault_root).parts[:-1])
@@ -108,7 +122,7 @@ async def adopt_disk_file(path: Path, vault_root: Path) -> str | None:
             session.add(entry)
             await session.flush()
 
-            await write_event(session, kind="file_uploaded", payload={
+            await AuditEvent.append(session, kind="file_uploaded", payload={
                 "file_id": file_id, "entry_id": entry.id,
                 "display_name": display_name, "sha256": sha256,
                 "size_bytes": size, "mime_type": mime_type,
@@ -120,27 +134,53 @@ async def adopt_disk_file(path: Path, vault_root: Path) -> str | None:
             )
             await session.commit()
             return entry.id
-        except Exception as exc:  # noqa: BLE001
-            log.error("adopt_disk_file: failed for %s: %s", path, exc)
+        except Exception:
             await session.rollback()
-            return None
+            raise
 
 
-async def ingest_all_new(report: ScanReport) -> list[str]:
-    """Register each disk-side new file in the db. We do NOT re-write
-    the bytes — the file is already where mirror wants it; rewriting
-    would either duplicate (collision rename) or shred the source."""
+async def ingest_all_new(
+    report: ScanReport,
+    *,
+    progress: "Callable[[int, int, Path], None] | None" = None,
+) -> tuple[list[str], list[SyncFailure]]:
+    """Register each disk-side new file. We do NOT re-write the bytes —
+    the file is already where mirror wants it; rewriting would either
+    duplicate (collision rename) or shred the source.
+
+    `progress(done, total, current_path)` is called once per file (after
+    success or failure) so the CLI can render N/M for long batches.
+
+    Returns (created_entry_ids, failures). Failures are caught per-file
+    so one broken path doesn't abort the rest of the batch.
+    """
     created: list[str] = []
-    for path in report.new:
-        eid = await adopt_disk_file(path, report.vault_root)
-        if eid is not None:
+    failures: list[SyncFailure] = []
+    total = len(report.new)
+    for idx, path in enumerate(report.new, start=1):
+        try:
+            eid = await adopt_disk_file(path, report.vault_root)
             created.append(eid)
-    return created
+        except Exception as exc:  # noqa: BLE001
+            log.error("ingest_all_new: failed for %s: %s", path, exc)
+            failures.append(SyncFailure(
+                category="new",
+                target=str(path.relative_to(report.vault_root)),
+                error=f"{type(exc).__name__}: {exc}",
+            ))
+        if progress is not None:
+            try:
+                progress(idx, total, path)
+            except Exception:
+                pass  # never let UI break the batch
+    return created, failures
 
 
-async def apply_moved(report: ScanReport) -> int:
+async def apply_moved(
+    report: ScanReport,
+) -> tuple[int, list[SyncFailure]]:
     """For each entry whose disk file moved/renamed, update db to match.
-    Returns the count actually applied.
+    Returns (count_applied, failures).
 
     Key subtlety: the disk file is ALREADY at the new path (the user
     moved it externally). We need to update the file_row's storage_key
@@ -150,6 +190,7 @@ async def apply_moved(report: ScanReport) -> int:
     """
     factory = get_session_factory()
     n = 0
+    failures: list[SyncFailure] = []
     for entry, new_path in report.moved:
         rel = new_path.relative_to(report.vault_root).as_posix()
         new_segments = list(new_path.relative_to(report.vault_root).parts[:-1])
@@ -159,8 +200,6 @@ async def apply_moved(report: ScanReport) -> int:
             live = await session.get(FileEntry, entry.id)
             if live is None or live.deleted_at is not None:
                 continue
-            # Sync storage_key to actual disk location FIRST.
-            from marginalia.db.models import File
             file_row = await session.get(File, live.file_id)
             if file_row is None:
                 continue
@@ -177,8 +216,6 @@ async def apply_moved(report: ScanReport) -> int:
                 ) != live.folder_id
                 name_changed = live.display_name != new_name
                 if folder_changed:
-                    # move first, then rename if needed (move_entry
-                    # doesn't accept new_name in this codebase).
                     await move_entry(
                         session, entry_id=live.id,
                         new_folder_id=(
@@ -204,13 +241,22 @@ async def apply_moved(report: ScanReport) -> int:
                 log.error("apply_moved: failed for entry=%s: %s",
                           entry.id, exc)
                 await session.rollback()
-    return n
+                failures.append(SyncFailure(
+                    category="moved",
+                    target=f"{entry.display_name} → {rel}",
+                    error=f"{type(exc).__name__}: {exc}",
+                ))
+    return n, failures
 
 
-async def forget_all_missing(report: ScanReport) -> int:
-    """Soft-delete every entry the report flagged as missing on disk."""
+async def forget_all_missing(
+    report: ScanReport,
+) -> tuple[int, list[SyncFailure]]:
+    """Soft-delete every entry the report flagged as missing on disk.
+    Returns (count_applied, failures)."""
     factory = get_session_factory()
     n = 0
+    failures: list[SyncFailure] = []
     for entry in report.missing:
         async with factory() as session:
             try:
@@ -221,32 +267,43 @@ async def forget_all_missing(report: ScanReport) -> int:
                 log.error("forget_all_missing: failed for entry=%s: %s",
                           entry.id, exc)
                 await session.rollback()
-    return n
+                failures.append(SyncFailure(
+                    category="missing",
+                    target=entry.display_name,
+                    error=f"{type(exc).__name__}: {exc}",
+                ))
+    return n, failures
 
 
-async def apply_modified(report: ScanReport) -> int:
+async def apply_modified(
+    report: ScanReport,
+) -> tuple[int, list[SyncFailure]]:
     """For entries whose disk file changed in place (same path, different
     sha256), update file_row.sha256/size and re-queue ingest. The entry
     keeps its identity (folder + display_name + entry_id stay the same)
     so callers / agents holding the entry_id don't lose context — only
-    the indexed content gets refreshed.
+    the indexed content gets refreshed. Returns (count_applied, failures).
     """
-    import hashlib
-    from sqlalchemy import select
-    from marginalia.db.models import File
-    from marginalia.tasks.enqueue import enqueue
-    from marginalia.tasks.kinds import KIND_INGEST_FILE
-
     factory = get_session_factory()
     n = 0
+    failures: list[SyncFailure] = []
     for entry, path in report.modified:
-        h = hashlib.sha256()
-        size = 0
-        with path.open("rb") as f:
-            while chunk := f.read(1024 * 256):
-                h.update(chunk)
-                size += len(chunk)
-        new_sha = h.hexdigest()
+        try:
+            h = hashlib.sha256()
+            size = 0
+            with path.open("rb") as f:
+                while chunk := f.read(1024 * 256):
+                    h.update(chunk)
+                    size += len(chunk)
+            new_sha = h.hexdigest()
+        except Exception as exc:  # noqa: BLE001
+            log.error("apply_modified: hash failed for %s: %s", path, exc)
+            failures.append(SyncFailure(
+                category="modified",
+                target=str(path.relative_to(report.vault_root)),
+                error=f"{type(exc).__name__}: {exc}",
+            ))
+            continue
 
         async with factory() as session:
             try:
@@ -274,20 +331,41 @@ async def apply_modified(report: ScanReport) -> int:
                 log.error("apply_modified: failed for entry=%s: %s",
                           entry.id, exc)
                 await session.rollback()
-    return n
+                failures.append(SyncFailure(
+                    category="modified",
+                    target=entry.display_name,
+                    error=f"{type(exc).__name__}: {exc}",
+                ))
+    return n, failures
 
 
-async def apply_all(report: ScanReport) -> dict[str, int]:
+async def apply_all(
+    report: ScanReport,
+    *,
+    progress: "Callable[[int, int, Path], None] | None" = None,
+) -> dict[str, object]:
     """Single entry point: ingest new + apply moved + apply modified +
     forget missing. Mirrors `git add -A` semantics — make db match disk
-    in every category."""
-    new = await ingest_all_new(report)
-    moved = await apply_moved(report)
-    modified = await apply_modified(report)
-    forgotten = await forget_all_missing(report)
+    in every category.
+
+    `progress(done, total, current_path)` is forwarded to ingest_all_new
+    (the only category slow enough to need a progress bar — others are
+    folder/db updates and finish near-instantly even on big reports).
+
+    Returns counts plus a `failures: list[SyncFailure]` so the caller
+    can render per-item errors instead of silently reporting partial
+    success."""
+    new_ids, new_failures = await ingest_all_new(report, progress=progress)
+    moved, moved_failures = await apply_moved(report)
+    modified, modified_failures = await apply_modified(report)
+    forgotten, missing_failures = await forget_all_missing(report)
     return {
-        "ingested": len(new),
+        "ingested": len(new_ids),
         "moved": moved,
         "modified": modified,
         "forgotten": forgotten,
+        "failures": (
+            new_failures + moved_failures
+            + modified_failures + missing_failures
+        ),
     }

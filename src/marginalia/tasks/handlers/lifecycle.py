@@ -45,7 +45,6 @@ from sqlalchemy import and_, exists, not_, select, update
 
 from marginalia.db.models import AuditEvent, FileEntry, Journal
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -277,7 +276,7 @@ async def _apply_decisions(
                 )
                 continue
 
-            await write_event(
+            await AuditEvent.append(
                 session,
                 kind="lifecycle_changed",
                 payload={

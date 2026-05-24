@@ -30,10 +30,9 @@ from typing import Any, Iterable, Mapping
 
 from sqlalchemy import delete, func, select, update
 
-from marginalia.db.models import EntryTag, Tag, TagAlias
+from marginalia.db.models import AuditEvent, EntryTag, Tag, TagAlias
 from marginalia.db.session import session_scope
 from marginalia.llm import ChatMessage, ChatRequest, TextBlock, get_chat_client
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -273,7 +272,7 @@ async def _apply_one_merge(
         merged.alias_of = canonical_id
         merged.updated_at = now
 
-        await write_event(
+        await AuditEvent.append(
             session,
             kind="tag_merged",
             payload={

@@ -31,8 +31,7 @@ from typing import AsyncIterator, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marginalia.db.models import EntryTag, File, FileEntry
-from marginalia.services.audit import write_event
+from marginalia.db.models import AuditEvent, EntryTag, File, FileEntry
 from marginalia.services.folders import (
     AmbiguousRemotePathError,
     parse_remote_folder,
@@ -48,7 +47,17 @@ from marginalia.utils.ids import new_id, storage_prefix
 
 
 _NameConflictPolicy = Literal["rename", "error", "skip"]
-DEFAULT_ON_CONFLICT: _NameConflictPolicy = "rename"
+
+
+def _resolve_default_on_conflict() -> _NameConflictPolicy:
+    # Resolved once at module import; env-driven via DEFAULT_ON_CONFLICT
+    # in .env. Per-call overrides on /v1/upload and file-entry routes
+    # still win when set.
+    from marginalia.config import get_settings
+    return get_settings().default_on_conflict
+
+
+DEFAULT_ON_CONFLICT: _NameConflictPolicy = _resolve_default_on_conflict()
 
 
 @dataclass(slots=True)
@@ -270,7 +279,7 @@ async def _create_new_file_entry(
     )
     session.add(file_row)
     await session.flush()
-    await write_event(
+    await AuditEvent.append(
         session,
         kind="file_created",
         payload={
@@ -297,7 +306,7 @@ async def _create_new_file_entry(
     )
     session.add(entry)
     await session.flush()
-    await write_event(
+    await AuditEvent.append(
         session,
         kind="entry_created",
         payload={
@@ -316,7 +325,7 @@ async def _create_new_file_entry(
         dedup_key=f"ingest_file:{file_row.id}",
     )
     if task is not None:
-        await write_event(
+        await AuditEvent.append(
             session,
             kind="task_enqueued",
             payload={"task_id": task.id, "kind": KIND_INGEST_FILE, "file_id": file_row.id},
@@ -384,7 +393,7 @@ async def _create_dedup_entry(
                 )
             )
 
-    await write_event(
+    await AuditEvent.append(
         session,
         kind="entry_created",
         payload={

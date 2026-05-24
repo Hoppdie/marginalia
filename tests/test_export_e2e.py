@@ -262,6 +262,29 @@ async def main():
             assert r.status_code == 404
             print("[4] unknown conversation 404")
 
+            # ---- 4b. markdown export ----------------------------------
+            r = await c.get(
+                f"/v1/conversations/{seeded['conv_done']}/export.md"
+            )
+            assert r.status_code == 200, r.text
+            assert r.headers["content-type"].startswith("text/markdown")
+            md_body = r.text
+            # frontmatter + question header
+            assert md_body.startswith("---\n")
+            assert "compare raft and paxos" in md_body
+            # raw entry_id should be GONE (rewritten to display name)
+            assert seeded["e_a"] not in md_body
+            assert seeded["e_b"] not in md_body
+            # display_name + summary expanded inline
+            assert "raft.md" in md_body
+            assert "Raft note" in md_body
+            assert "paxos.md" in md_body
+            # ghost is missing → "(reference removed)" placeholder
+            assert "(reference removed)" in md_body
+            # body markers untouched
+            assert "[^a]" in md_body and "[^b]" in md_body
+            print("[4b] markdown export OK")
+
         # ---- 5. CLI /export ------------------------------------------
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as raw:
             client = MarginaliaClient(base_url="http://t", transport=transport)
@@ -274,6 +297,15 @@ async def main():
             assert cli_dest.stat().st_size > 100
             print("[5] CLI /export with explicit id OK; bytes =",
                   cli_dest.stat().st_size)
+
+            # markdown destination → single .md file, no zip
+            md_dest = _TEST_ROOT / "via_cli.md"
+            await dispatch(ctx, f"/export {seeded['conv_done']} {md_dest}")
+            assert md_dest.exists()
+            md_text = md_dest.read_text(encoding="utf-8")
+            assert "raft.md" in md_text and "Raft note" in md_text
+            assert seeded["e_a"] not in md_text
+            print("[5b] CLI /export <id> *.md OK")
 
             # /export with no id and no history → graceful message
             await dispatch(ctx, "/export")

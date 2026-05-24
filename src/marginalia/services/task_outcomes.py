@@ -8,7 +8,10 @@ Conventions:
   - object_kind / object_id strings are documented per task in the handler
     module top-of-file. Use 'global' / 'global' for tasks that don't operate
     on a single object (normalize_tags, prune_*, etc.).
-  - outcome ∈ {'applied', 'noop', 'rejected', 'deferred'}.
+  - outcome ∈ {'applied', 'noop', 'rejected', 'deferred', 'error'}.
+    'error' = handler tried and failed (LLM 500, partial commit, etc.); use
+    when failure is visible to the user via degraded quality. 'deferred' =
+    handler intentionally postponed work it could have done.
   - detail is task-specific JSON. Keep keys consistent across handlers so a
     single ad-hoc query can pull the whole story for an object.
 """
@@ -24,7 +27,7 @@ from marginalia.db.models import TaskOutcome
 from marginalia.utils.ids import new_id
 
 
-VALID_OUTCOMES = ("applied", "noop", "rejected", "deferred")
+VALID_OUTCOMES = ("applied", "noop", "rejected", "deferred", "error")
 GLOBAL_OBJECT_KIND = "global"
 GLOBAL_OBJECT_ID = "global"
 

@@ -21,9 +21,9 @@ from typing import Any, Mapping
 
 from sqlalchemy import select
 
+from marginalia.db.models import AuditEvent
 from marginalia.db.models.tasks import Task
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -97,7 +97,7 @@ async def handle_periodic_tick(payload: Mapping[str, Any]) -> None:
             )
             if task is not None:
                 dispatched.append(kind)
-                await write_event(
+                await AuditEvent.append(
                     session,
                     kind="task_enqueued",
                     task_id=task.id,

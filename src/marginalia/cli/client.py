@@ -101,15 +101,14 @@ class MarginaliaClient:
         local_path: str | Path,
         remote_path: str,
         display_name: str | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str | None = None,
     ) -> dict[str, Any]:
         local = Path(local_path)
         if not local.is_file():
             raise ValueError(f"not a file: {local}")
-        params: dict[str, Any] = {
-            "remote_path": remote_path,
-            "on_conflict": on_conflict,
-        }
+        params: dict[str, Any] = {"remote_path": remote_path}
+        if on_conflict is not None:
+            params["on_conflict"] = on_conflict
         if display_name is not None:
             params["display_name"] = display_name
         with local.open("rb") as fh:
@@ -277,6 +276,33 @@ class MarginaliaClient:
                 "citation_count": int(r.headers.get("x-citation-count") or 0),
                 "missing_count": int(r.headers.get("x-missing-count") or 0),
             }
+
+    async def export_conversation_markdown(
+        self, conversation_id: str, *, dest: Path
+    ) -> dict[str, Any]:
+        """Single-file markdown export with citations rewritten inline.
+
+        Distinct from `export_conversation` (zip): the .md endpoint
+        produces a self-contained document, no references folder. Use
+        when sharing a one-off result rather than archiving sources."""
+        r = await self._http.get(
+            f"/v1/conversations/{conversation_id}/export.md"
+        )
+        if r.status_code >= 400:
+            raise CliHttpError(
+                r.status_code,
+                r.json() if _is_json(r) else r.text,
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        body = r.content
+        dest.write_bytes(body)
+        return {
+            "saved_to": str(dest),
+            "bytes_written": len(body),
+            "conversation_id": r.headers.get("x-conversation-id"),
+            "citation_count": int(r.headers.get("x-citation-count") or 0),
+            "missing_count": int(r.headers.get("x-missing-count") or 0),
+        }
 
 
 class CliHttpError(Exception):

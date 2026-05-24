@@ -1,7 +1,15 @@
 """User-side file_entry mutation routes — design.md §14.1.
 
-  PATCH  /file-entries/{id}     rename / move / change lifecycle
-  DELETE /file-entries/{id}     soft-delete + purge_after window
+Each mutation is its own sub-resource endpoint so the request body
+expresses exactly one intent. The previous omnibus `PATCH
+/file-entries/{id}` mixed three operations into one body and required
+an `update_folder=true` flag to distinguish "set folder_id" from
+"didn't mean to". That sentinel was the symptom of overloading.
+
+  PATCH  /file-entries/{id}/name       rename
+  PATCH  /file-entries/{id}/folder     move (and possibly auto-rename)
+  PATCH  /file-entries/{id}/lifecycle  state change
+  DELETE /file-entries/{id}            soft-delete + purge_after window
 
 User-only operations: AI never calls these.
 """
@@ -10,7 +18,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.db.models import FileEntry
@@ -25,12 +33,18 @@ from marginalia.services.upload import (
 router = APIRouter(prefix="/file-entries", tags=["file_entries"])
 
 
-class PatchEntryBody(BaseModel):
-    display_name: str | None = None
-    folder_id: str | None = Field(default=None)
-    update_folder: bool = False  # set true to actually move
-    lifecycle: str | None = None
+class RenameBody(BaseModel):
+    display_name: str
     on_conflict: Literal["rename", "error", "skip"] = DEFAULT_ON_CONFLICT
+
+
+class MoveBody(BaseModel):
+    folder_id: str
+    on_conflict: Literal["rename", "error", "skip"] = DEFAULT_ON_CONFLICT
+
+
+class LifecycleBody(BaseModel):
+    lifecycle: str
 
 
 def _serialize(e: FileEntry) -> dict[str, Any]:
@@ -45,56 +59,89 @@ def _serialize(e: FileEntry) -> dict[str, Any]:
     }
 
 
-@router.patch("/{entry_id}")
-async def patch_entry(
-    entry_id: str,
-    body: PatchEntryBody,
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    try:
-        if body.display_name is not None:
-            await entry_service.rename_entry(
-                session,
-                entry_id=entry_id,
-                new_name=body.display_name,
-                on_conflict=body.on_conflict,
-            )
-        if body.update_folder:
-            if not body.folder_id:
-                raise ValueError("folder_id required when update_folder=true")
-            await entry_service.move_entry(
-                session,
-                entry_id=entry_id,
-                new_folder_id=body.folder_id,
-                on_conflict=body.on_conflict,
-            )
-        if body.lifecycle is not None:
-            await entry_service.change_lifecycle(
-                session, entry_id=entry_id, new_lifecycle=body.lifecycle,
-            )
-    except entry_service.EntryNotFoundError:
-        await session.rollback()
-        raise HTTPException(status_code=404, detail="entry not found")
-    except DisplayNameConflictError as e:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail={
-            "error": "display_name_conflict",
-            "folder_id": e.folder_id, "display_name": e.display_name,
-            "existing_entry_id": e.existing_entry_id,
-            "existing_file_id": e.existing_file_id,
-        })
-    except entry_service.InvalidLifecycleTransitionError as e:
-        await session.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-    except ValueError as e:
-        await session.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+def _conflict_response(e: DisplayNameConflictError) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "error": "display_name_conflict",
+        "folder_id": e.folder_id, "display_name": e.display_name,
+        "existing_entry_id": e.existing_entry_id,
+        "existing_file_id": e.existing_file_id,
+    })
 
+
+async def _finalize(session: AsyncSession, entry_id: str) -> dict[str, Any]:
     e = await session.get(FileEntry, entry_id)
     await session.commit()
     if e is None:
         raise HTTPException(status_code=404, detail="entry vanished")
     return _serialize(e)
+
+
+@router.patch("/{entry_id}/name")
+async def rename_entry_endpoint(
+    entry_id: str,
+    body: RenameBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        await entry_service.rename_entry(
+            session, entry_id=entry_id,
+            new_name=body.display_name, on_conflict=body.on_conflict,
+        )
+    except entry_service.EntryNotFoundError:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail="entry not found")
+    except DisplayNameConflictError as exc:
+        await session.rollback()
+        raise _conflict_response(exc)
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _finalize(session, entry_id)
+
+
+@router.patch("/{entry_id}/folder")
+async def move_entry_endpoint(
+    entry_id: str,
+    body: MoveBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        await entry_service.move_entry(
+            session, entry_id=entry_id,
+            new_folder_id=body.folder_id, on_conflict=body.on_conflict,
+        )
+    except entry_service.EntryNotFoundError:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail="entry not found")
+    except DisplayNameConflictError as exc:
+        await session.rollback()
+        raise _conflict_response(exc)
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _finalize(session, entry_id)
+
+
+@router.patch("/{entry_id}/lifecycle")
+async def lifecycle_entry_endpoint(
+    entry_id: str,
+    body: LifecycleBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        await entry_service.change_lifecycle(
+            session, entry_id=entry_id, new_lifecycle=body.lifecycle,
+        )
+    except entry_service.EntryNotFoundError:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail="entry not found")
+    except entry_service.InvalidLifecycleTransitionError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _finalize(session, entry_id)
 
 
 @router.delete("/{entry_id}", status_code=200)

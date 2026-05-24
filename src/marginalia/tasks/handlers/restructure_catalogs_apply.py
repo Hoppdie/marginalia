@@ -18,9 +18,8 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from marginalia.db.models import Catalog, FileEntry
+from marginalia.db.models import AuditEvent, Catalog, FileEntry
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -136,7 +135,7 @@ async def _op_rename(session, op: dict, now: datetime) -> None:
     old_name = cat.name
     cat.name = new_name
     cat.updated_at = now
-    await write_event(session, kind="catalog_updated", payload={
+    await AuditEvent.append(session, kind="catalog_updated", payload={
         "catalog_id": cat.id, "field": "name",
         "old": old_name, "new": new_name,
     })
@@ -162,7 +161,7 @@ async def _op_move(session, op: dict, temp_map: dict, now: datetime) -> None:
     old_parent = cat.parent_id
     cat.parent_id = new_parent_id
     cat.updated_at = now
-    await write_event(session, kind="catalog_moved", payload={
+    await AuditEvent.append(session, kind="catalog_moved", payload={
         "catalog_id": cat.id, "old_parent": old_parent, "new_parent": new_parent_id,
     })
     await record_outcome(
@@ -178,7 +177,7 @@ async def _op_update_extra(session, op: dict, now: datetime) -> None:
     new_extra = op.get("extra") or None
     cat.extra = new_extra
     cat.updated_at = now
-    await write_event(session, kind="catalog_updated", payload={
+    await AuditEvent.append(session, kind="catalog_updated", payload={
         "catalog_id": cat.id, "field": "extra",
     })
     await record_outcome(
@@ -212,7 +211,7 @@ async def _op_create(session, op: dict, temp_map: dict, now: datetime) -> None:
     session.add(cat)
     await session.flush()
     temp_map[temp_id] = real_id
-    await write_event(session, kind="catalog_updated", payload={
+    await AuditEvent.append(session, kind="catalog_updated", payload={
         "catalog_id": real_id, "field": "create",
         "name": name, "parent_id": parent_id,
     })
@@ -241,7 +240,7 @@ async def _op_soft_delete(session, op: dict, temp_map: dict, now: datetime) -> N
     for child in children:
         child.parent_id = merge_into
         child.updated_at = now
-        await write_event(session, kind="catalog_moved", payload={
+        await AuditEvent.append(session, kind="catalog_moved", payload={
             "catalog_id": child.id, "old_parent": cat.id, "new_parent": merge_into,
             "reason": "parent_soft_deleted",
         })
@@ -258,7 +257,7 @@ async def _op_soft_delete(session, op: dict, temp_map: dict, now: datetime) -> N
 
     cat.deleted_at = now
     cat.updated_at = now
-    await write_event(session, kind="catalog_updated", payload={
+    await AuditEvent.append(session, kind="catalog_updated", payload={
         "catalog_id": cat.id, "field": "deleted_at", "merge_into": merge_into,
         "entries_reassigned": n_entries,
         "children_reassigned": len(children),

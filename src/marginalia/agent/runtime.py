@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import AsyncIterator
@@ -67,6 +68,15 @@ TOOL_RESULT_PREVIEW_LEN = 240
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@dataclass(slots=True)
+class _ExecuteOutcome:
+    """Mutable carrier returned by `_run_execute_phase` so the caller can
+    pick up the final answer text and truncation flag without needing a
+    sentinel event in the public stream."""
+    answer: str = ""
+    truncated: bool = False
 
 
 async def run_turn(
@@ -115,8 +125,7 @@ async def run_turn(
     )
     yield AgentEvent(event_type="plan", data=plan_text)
 
-    final_answer = ""
-    truncated = False
+    outcome = _ExecuteOutcome()
     async for ev in _run_execute_phase(
         chat=chat,
         system_prompt=system_prompt,
@@ -124,19 +133,15 @@ async def run_turn(
         user_message=user_message,
         conversation_id=conversation_id,
         session_id=session_id,
+        outcome=outcome,
     ):
-        if ev.event_type == "answer":
-            final_answer = ev.data
-        elif ev.event_type == "_truncated":
-            truncated = True
-            continue
         yield ev
 
     async with session_scope() as db:
         await session_service.finalize_conversation(
             db,
             conversation_id=conversation_id,
-            agent_response=final_answer,
+            agent_response=outcome.answer,
         )
         await enqueue(
             db,
@@ -149,11 +154,11 @@ async def run_turn(
             task_kind="run_turn",
             object_kind="conversation",
             object_id=conversation_id,
-            outcome="deferred" if truncated else "applied",
+            outcome="deferred" if outcome.truncated else "applied",
             detail={
                 "turn_index": turn_index,
                 "session_id": session_id,
-                "truncated": truncated,
+                "truncated": outcome.truncated,
             },
         )
         conv = await db.get(Conversation, conversation_id)
@@ -177,7 +182,7 @@ async def run_turn(
             "tool_calls": usage.tool_calls,
             "llm_calls": usage.llm_calls,
             "duration_ms": usage.duration_ms,
-            "truncated": truncated,
+            "truncated": outcome.truncated,
         }),
     )
 
@@ -229,12 +234,15 @@ async def _run_execute_phase(
     user_message: str,
     conversation_id: str,
     session_id: str,
+    outcome: _ExecuteOutcome,
 ) -> AsyncIterator[AgentEvent]:
     """Execute loop as event stream.
 
-    Yields AgentEvent frames: thinking / tool_call / tool_result / answer /
-    `_truncated` (internal sentinel consumed by run_turn — see _truncated
-    handler in the parent generator).
+    Yields AgentEvent frames: thinking / tool_call / tool_result / answer.
+    Truncation status and final-answer text are written into `outcome`
+    instead of mixed into the stream — keeps the public event stream
+    clean (no internal sentinels) and lets the caller branch on plain
+    Python attributes.
     """
     tool_defs = all_tool_defs()
     ctx = ToolContext(session_id=session_id, conversation_id=conversation_id)
@@ -293,32 +301,28 @@ async def _run_execute_phase(
             messages.append(ChatMessage(role="assistant", content=assistant_blocks))
 
             tool_result_blocks: list[ToolResultBlock] = []
-            async for ev_or_block in _dispatch_tool_calls(
+            async for ev in _dispatch_tool_calls(
                 tool_calls=resp.tool_calls,
                 ctx=ctx,
                 conversation_id=conversation_id,
+                result_blocks=tool_result_blocks,
             ):
-                if isinstance(ev_or_block, AgentEvent):
-                    yield ev_or_block
-                else:
-                    tool_result_blocks.append(ev_or_block)
+                yield ev
             messages.append(ChatMessage(role="tool", content=tool_result_blocks))
             last_text = resp.text or last_text
             continue
 
         last_text = resp.text or last_text
         if resp.stop_reason in ("end_turn", "stop_sequence"):
-            yield AgentEvent(
-                event_type="answer",
-                data=resp.text or last_text or "(无回答)",
-            )
+            answer = resp.text or last_text or "(无回答)"
+            outcome.answer = answer
+            yield AgentEvent(event_type="answer", data=answer)
             return
         if resp.stop_reason == "max_tokens":
             log.warning("execute turn %d hit max_tokens; treating as final", turn)
-            yield AgentEvent(
-                event_type="answer",
-                data=resp.text or last_text or "(无回答)",
-            )
+            answer = resp.text or last_text or "(无回答)"
+            outcome.answer = answer
+            yield AgentEvent(event_type="answer", data=answer)
             return
 
     log.warning("conversation %s hit MAX_EXECUTE_TURNS=%d", conversation_id,
@@ -327,7 +331,8 @@ async def _run_execute_phase(
         last_text
         or "对不起——本轮调查超过了预算上限，没能给出完整回答。请把问题分小或换个角度再试。"
     )
-    yield AgentEvent(event_type="_truncated")
+    outcome.truncated = True
+    outcome.answer = fallback
     yield AgentEvent(event_type="answer", data=fallback)
 
 
@@ -353,12 +358,15 @@ async def _dispatch_tool_calls(
     tool_calls,
     ctx: ToolContext,
     conversation_id: str,
-):
+    result_blocks: list[ToolResultBlock],
+) -> AsyncIterator[AgentEvent]:
     """Run each tool inside its own session_scope; record on conversation.
 
-    Async generator yielding interleaved AgentEvent (`tool_call`,
-    `tool_result`) and ToolResultBlock (the model-feedback payload). The
-    caller filters by isinstance.
+    Async generator yielding AgentEvent (`tool_call`, `tool_result`).
+    Per-call ToolResultBlocks are appended to `result_blocks` so the
+    caller can feed them back to the model in a single tool message —
+    avoids an interleaved `AgentEvent | ToolResultBlock` stream the
+    caller would have to isinstance-filter.
     """
     for tc in tool_calls:
         yield AgentEvent(
@@ -390,11 +398,11 @@ async def _dispatch_tool_calls(
                     "name": tc.name, "ok": False, "error": err,
                 }, ensure_ascii=False),
             )
-            yield ToolResultBlock(
+            result_blocks.append(ToolResultBlock(
                 tool_call_id=tc.id,
                 content=f"ERROR: {err}",
                 is_error=True,
-            )
+            ))
             continue
 
         try:
@@ -421,11 +429,11 @@ async def _dispatch_tool_calls(
                     "name": tc.name, "ok": False, "error": repr(exc),
                 }, ensure_ascii=False),
             )
-            yield ToolResultBlock(
+            result_blocks.append(ToolResultBlock(
                 tool_call_id=tc.id,
                 content=f"ERROR: {exc!r}",
                 is_error=True,
-            )
+            ))
             continue
 
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -451,7 +459,7 @@ async def _dispatch_tool_calls(
                 "name": tc.name, "ok": True, "preview": preview,
             }, ensure_ascii=False),
         )
-        yield ToolResultBlock(
+        result_blocks.append(ToolResultBlock(
             tool_call_id=tc.id,
             content=result_text,
-        )
+        ))

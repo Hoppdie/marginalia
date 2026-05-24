@@ -24,10 +24,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marginalia.db.models import Task
+from marginalia.db.models import AuditEvent, Task
 from marginalia.db.models.task_outcomes import TaskOutcome
 from marginalia.db.session import get_session
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import record_outcome
 from marginalia.tasks.enqueue import enqueue
 from marginalia.tasks.kinds import (
@@ -118,7 +117,7 @@ async def post_tend(
             "skipped": False,
             "status": task.status,
         })
-        await write_event(
+        await AuditEvent.append(
             db,
             kind="task_enqueued",
             task_id=task.id,

@@ -32,9 +32,8 @@ from typing import Any, Mapping
 
 from sqlalchemy import delete, select
 
-from marginalia.db.models import File, FileEntry
+from marginalia.db.models import AuditEvent, File, FileEntry
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -77,7 +76,7 @@ async def handle_purge_deleted_files(payload: Mapping[str, Any]) -> None:
             await session.execute(
                 delete(FileEntry).where(FileEntry.id == entry_id)
             )
-            await write_event(
+            await AuditEvent.append(
                 session,
                 kind="entry_purged",
                 payload={
@@ -111,7 +110,7 @@ async def handle_purge_deleted_files(payload: Mapping[str, Any]) -> None:
                     continue
                 storage_key = file_row.storage_key
                 await session.execute(delete(File).where(File.id == file_id))
-                await write_event(
+                await AuditEvent.append(
                     session,
                     kind="file_purged",
                     payload={
@@ -158,7 +157,7 @@ async def _delete_storage_object(
         log.exception("storage delete failed for file %s key %s", file_id, key)
         try:
             async with session_scope() as session:
-                await write_event(
+                await AuditEvent.append(
                     session,
                     kind="storage_delete_failed",
                     payload={"file_id": file_id, "storage_key": key, "error": repr(exc)},

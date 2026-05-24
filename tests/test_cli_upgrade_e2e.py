@@ -293,7 +293,7 @@ def test_repl_fallback_when_not_tty() -> None:
     sandbox.mkdir(parents=True)
     os.environ["SQLITE_PATH"] = str(sandbox / "marginalia.db")
     os.environ["LOCAL_STORAGE_ROOT"] = str(sandbox / "objects")
-os.environ["STORAGE_BACKEND"] = "local"
+    os.environ["STORAGE_BACKEND"] = "local"
     os.environ["WORKER_ENABLED"] = "false"
     os.environ["LLM_DEFAULT_API_KEY"] = "sk-fake"
     os.environ["LLM_DEFAULT_MODEL"] = "fake-model"
@@ -410,7 +410,7 @@ def test_embedded_mode_starts_lifespan_and_exits_cleanly() -> None:
                 return {"health": health_body, "folders": r2.json()}
 
     out = asyncio.run(_go())
-    assert out["health"] == {"status": "ok"}
+    assert out["health"] == {"status": "ok", "storage_backend": "local"}
     assert isinstance(out["folders"], dict)
     print("[A4] embedded mode lifespan + ASGI transport round-trip OK")
 

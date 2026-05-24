@@ -52,7 +52,6 @@ from sqlalchemy import func, select, update
 from marginalia.db.models import Catalog, FileEntry, Journal, Tag
 from marginalia.db.session import session_scope
 from marginalia.llm import ChatMessage, ChatRequest, TextBlock, get_chat_client
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,

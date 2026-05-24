@@ -26,8 +26,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marginalia.db.models import File, FileEntry, Folder
-from marginalia.services.audit import write_event
+from marginalia.db.models import AuditEvent, File, FileEntry, Folder
 from marginalia.services.upload import (
     DEFAULT_ON_CONFLICT,
     DisplayNameConflictError,
@@ -151,7 +150,7 @@ async def rename_entry(
     entry.display_name = final
     entry.updated_at = _utcnow()
     await _mirror_sync_disk_path(db, entry, reason="rename")
-    await write_event(db, kind="entry_renamed", payload={
+    await AuditEvent.append(db, kind="entry_renamed", payload={
         "entry_id": entry.id,
         "folder_id": entry.folder_id,
         "old_name": old_name,
@@ -204,7 +203,7 @@ async def move_entry(
     entry.display_name = final
     entry.updated_at = _utcnow()
     await _mirror_sync_disk_path(db, entry, reason="move")
-    await write_event(db, kind="entry_moved", payload={
+    await AuditEvent.append(db, kind="entry_moved", payload={
         "entry_id": entry.id,
         "old_folder_id": old_folder,
         "new_folder_id": new_folder_id,
@@ -231,7 +230,7 @@ async def change_lifecycle(
     old = entry.lifecycle
     entry.lifecycle = new_lifecycle
     entry.updated_at = _utcnow()
-    await write_event(db, kind="lifecycle_changed", payload={
+    await AuditEvent.append(db, kind="lifecycle_changed", payload={
         "entry_id": entry.id,
         "old": old,
         "new": new_lifecycle,
@@ -251,7 +250,7 @@ async def soft_delete_entry(
     entry.deleted_at = now
     entry.purge_after = now + timedelta(seconds=max(0, purge_after_seconds))
     entry.updated_at = now
-    await write_event(db, kind="entry_soft_deleted", payload={
+    await AuditEvent.append(db, kind="entry_soft_deleted", payload={
         "entry_id": entry.id,
         "folder_id": entry.folder_id,
         "display_name": entry.display_name,

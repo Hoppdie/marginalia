@@ -38,6 +38,7 @@ from typing import Any, Mapping
 from sqlalchemy import select
 
 from marginalia.db.models import (
+    AuditEvent,
     EntryRelation,
     EntryTag,
     FileEntry,
@@ -46,7 +47,6 @@ from marginalia.db.models import (
     View,
 )
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
@@ -267,7 +267,7 @@ async def _persist_view(
     )
     session.add(view)
     await session.flush()
-    await write_event(
+    await AuditEvent.append(
         session,
         kind="view_created",
         payload={

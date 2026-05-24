@@ -46,6 +46,27 @@ EMBEDDED_MARKER = "embedded"
 ENV_SERVER = "MARGINALIA_SERVER"
 
 
+def _build_prompt(ctx: CliContext, *, pending: int = 0) -> str:
+    """Compose the REPL prompt: `marginalia[<backend> <cwd> • N busy]>`.
+
+    Dropped when state is uninteresting (no backend known, cwd is "/",
+    no pending tasks) so a fresh REPL still looks like the old prompt.
+    Pending count is queried once per prompt-cycle (not per keystroke).
+    """
+    backend = ctx.storage_backend
+    cwd = ctx.cwd_remote or "/"
+    pieces: list[str] = []
+    if backend and backend != "?":
+        pieces.append(backend)
+    if cwd and cwd != "/":
+        pieces.append(cwd)
+    if pending:
+        pieces.append(f"{pending} busy")
+    if not pieces:
+        return "marginalia> "
+    return f"marginalia[{' • '.join(pieces)}]> "
+
+
 def _print_banner(ctx: CliContext, mode: str) -> None:
     print()
     print("Marginalia CLI")
@@ -54,7 +75,6 @@ def _print_banner(ctx: CliContext, mode: str) -> None:
     else:
         print(f"  server: {ctx.client.base_url}")
     print(f"  cwd:    {ctx.cwd_remote}")
-    print(f"  on_conflict: {ctx.on_conflict}")
     print()
     print("type /help for commands, or just type a question.")
     print("  Tab        — complete /<command>")
@@ -66,29 +86,78 @@ def _print_banner(ctx: CliContext, mode: str) -> None:
 
 # ---- prompt_toolkit-based reader (interactive TTY) ------------------------
 
-def _make_slash_completer():
-    """Build a Completer that suggests `/<command>` names from the registry.
+def _make_slash_completer(ctx: CliContext | None = None):
+    """Build a Completer that suggests `/<command>` names plus argument
+    completions populated from prior commands.
 
-    Factored out so tests can exercise completion without spinning up a
-    full PromptSession (which on Windows requires a real console buffer)."""
+    What it completes:
+      * `/<command>` at the start of the line  → command names
+      * `/info | /discover | /download <prefix>`  → entry-id prefixes the
+        user has already seen (via /search, /info, /discover, /ls)
+      * `/cd <path>`                           → folder paths from /tree
+      * `/upload <local> <remote>`             → folder paths for the
+                                                 second positional arg
+      * fall-through                           → no suggestions
+
+    No background fetches — completion only surfaces what the user has
+    pulled into ctx via earlier commands. Same intuition as shell history.
+    """
     from prompt_toolkit.completion import Completer, Completion
 
     completion_strs = [name for name, _ in list_commands()]
+    ENTRY_ID_CMDS = {"/info", "/discover", "/download"}
+    PATH_CMDS = {"/cd"}
 
     class SlashCompleter(Completer):
         def get_completions(self, document, complete_event):
             text = document.text_before_cursor
             if not text.startswith("/"):
                 return
-            for c in completion_strs:
-                if c.startswith(text):
-                    yield Completion(c, start_position=-len(text))
+            # Command-name completion: still on the first token.
+            if " " not in text:
+                for c in completion_strs:
+                    if c.startswith(text):
+                        yield Completion(c, start_position=-len(text))
+                return
+            if ctx is None:
+                return
+            cmd, _, rest = text.partition(" ")
+            word = document.get_word_before_cursor(WORD=True)
+            if cmd in ENTRY_ID_CMDS:
+                for eid, name in ctx.seen_entry_ids.items():
+                    if eid.startswith(word):
+                        yield Completion(
+                            eid, start_position=-len(word),
+                            display_meta=name[:40],
+                        )
+            elif cmd in PATH_CMDS:
+                for p in ctx.seen_folder_paths:
+                    if p.startswith(word):
+                        yield Completion(p, start_position=-len(word))
+            elif cmd == "/upload":
+                # Second positional arg only — first is a local path.
+                tokens = rest.split()
+                wants_remote = (
+                    len(tokens) >= 2
+                    or (len(tokens) == 1 and rest.endswith(" "))
+                )
+                if wants_remote:
+                    for p in ctx.seen_folder_paths:
+                        if p.startswith(word):
+                            yield Completion(p, start_position=-len(word))
 
     return SlashCompleter()
 
 
-def _build_pt_session():
-    """Lazy-build a prompt_toolkit PromptSession with completion + history."""
+def _build_pt_session(prompt_fn, ctx: CliContext | None = None):
+    """Lazy-build a prompt_toolkit PromptSession with completion + history.
+
+    `prompt_fn` is called once per prompt cycle to render the message
+    string — this is how `marginalia[mirror /research • 12 busy]>` stays
+    in sync without polling on every keystroke. `ctx` is passed to the
+    completer so it can suggest entry-ids and folder paths the user has
+    already encountered.
+    """
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
@@ -108,8 +177,8 @@ def _build_pt_session():
         history_path = None  # fall back to in-memory
 
     return PromptSession(
-        message=PROMPT,
-        completer=_make_slash_completer(),
+        message=prompt_fn,
+        completer=_make_slash_completer(ctx),
         history=FileHistory(str(history_path)) if history_path else None,
         key_bindings=bindings,
         complete_while_typing=False,
@@ -216,6 +285,20 @@ async def _flush_pending_tasks_prompt(
 
 # ---- main loop ------------------------------------------------------------
 
+async def _refresh_pending_count(client: MarginaliaClient) -> int:
+    """Sum of running + pending tasks. Used to drive `N busy` in the prompt.
+
+    Called once per prompt cycle (between iterations of the read loop), not
+    per keystroke — so a slow DB doesn't block typing. Failures degrade to
+    zero rather than break the prompt.
+    """
+    try:
+        counts = await client.running_task_count()
+    except Exception:
+        return 0
+    return counts.get("running", 0) + counts.get("pending", 0)
+
+
 async def run_repl(
     *,
     base_url: str = "http://127.0.0.1:8000",
@@ -238,28 +321,36 @@ async def run_repl(
     """
     client = MarginaliaClient(base_url=base_url, transport=transport)
     ctx = CliContext(client=client)
+    pending_count = 0
 
     use_pt = sys.stdin.isatty() and sys.stdout.isatty()
-    pt_session = _build_pt_session() if use_pt else None
+    pt_session = (
+        _build_pt_session(
+            lambda: _build_prompt(ctx, pending=pending_count), ctx,
+        )
+        if use_pt else None
+    )
 
     try:
         try:
-            await client.health()
+            health = await client.health()
         except Exception as exc:  # noqa: BLE001
             target = "embedded server" if mode == EMBEDDED_MARKER else base_url
             print(f"cannot reach {target}: {exc}")
             return 2
+        ctx.storage_backend = health.get("storage_backend", "?")
 
         _print_banner(ctx, mode)
 
         while True:
+            pending_count = await _refresh_pending_count(client)
             if pt_session is not None:
                 line = await _read_with_pt(pt_session)
                 if line is None:
                     print()
                     break
             else:
-                sys.stdout.write(PROMPT)
+                sys.stdout.write(_build_prompt(ctx, pending=pending_count))
                 sys.stdout.flush()
                 line = await _read_via_stdin()
                 if line is None:

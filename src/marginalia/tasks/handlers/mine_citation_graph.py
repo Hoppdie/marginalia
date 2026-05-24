@@ -38,19 +38,18 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
-from marginalia.db.models import Conversation, EntryRelation, FileEntry
+from marginalia.db.models import Conversation, FileEntry
 from marginalia.db.session import session_scope
-from marginalia.services.audit import write_event
 from marginalia.services.exports import parse_citations
 from marginalia.services.task_outcomes import (
     GLOBAL_OBJECT_ID,
     GLOBAL_OBJECT_KIND,
     record_outcome,
 )
+from marginalia.tasks.handlers._mining_helpers import upsert_relation_pair
 from marginalia.tasks.kinds import KIND_MINE_CITATION_GRAPH, task_handler
-from marginalia.utils.ids import new_id
 
 log = logging.getLogger(__name__)
 
@@ -118,66 +117,22 @@ async def handle_mine_citation_graph(payload: Mapping[str, Any]) -> None:
             if a not in live_ids or b not in live_ids:
                 skipped_dead_entry += 1
                 continue
-            existing = (
-                await session.execute(
-                    select(EntryRelation).where(
-                        EntryRelation.entry_a_id == a,
-                        EntryRelation.entry_b_id == b,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                await session.execute(
-                    update(EntryRelation)
-                    .where(EntryRelation.id == existing.id)
-                    .values(
-                        observation_count=
-                            (existing.observation_count or 0) + n,
-                        last_observed_at=now,
-                    )
-                )
+            note = (
+                f"Co-cited in {n} assistant turns from the last "
+                f"{CITATION_WINDOW_DAYS} days."
+            )
+            _, action = await upsert_relation_pair(
+                session,
+                entry_a_id=a, entry_b_id=b,
+                observation_add=n,
+                source_kind=SOURCE_KIND,
+                note=note,
+                now=now,
+            )
+            if action == "incremented":
                 incremented += 1
-                await write_event(
-                    session,
-                    kind="relation_mined",
-                    payload={
-                        "relation_id": existing.id,
-                        "entry_a_id": a,
-                        "entry_b_id": b,
-                        "source_kind": SOURCE_KIND,
-                        "observation_added": n,
-                        "action": "incremented",
-                    },
-                )
             else:
-                rel_id = new_id()
-                note = (
-                    f"Co-cited in {n} assistant turns from the last "
-                    f"{CITATION_WINDOW_DAYS} days."
-                )
-                session.add(EntryRelation(
-                    id=rel_id,
-                    entry_a_id=a,
-                    entry_b_id=b,
-                    note=note,
-                    source_kind=SOURCE_KIND,
-                    last_observed_at=now,
-                    observation_count=n,
-                    created_at=now,
-                ))
                 new_relations += 1
-                await write_event(
-                    session,
-                    kind="relation_mined",
-                    payload={
-                        "relation_id": rel_id,
-                        "entry_a_id": a,
-                        "entry_b_id": b,
-                        "source_kind": SOURCE_KIND,
-                        "observation_added": n,
-                        "action": "created",
-                    },
-                )
 
         await record_outcome(
             session,
