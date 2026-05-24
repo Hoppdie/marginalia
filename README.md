@@ -104,7 +104,10 @@ Three LLM roles (writers):
 ```
 
 ```
-12 tasks, 12 tools, 3 ingest pipelines (text / image / pdf-with-figures)
+12 tasks, 12 tools, 8 ingest pipelines
+  text / pdf (incl. scanned-PDF OCR via VLM) / image (with VLM downscaling)
+  docx / spreadsheet / log (incl. logrotate variants)
+  archive (zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab / 50+ via py7zz)
 ```
 
 For full design, see [`design.md`](design.md). For an architectural
@@ -200,27 +203,31 @@ MARGINALIA_SERVER=http://server.lan:8000
 # run any single end-to-end test
 .venv/Scripts/python tests/test_agent_e2e.py
 
-# run all 27 e2e tests
+# run all 30 e2e tests
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-27 e2e tests cover upload, ingest, reflect, dispatcher, purge,
+30 e2e tests cover upload, ingest, reflect, dispatcher, purge,
 normalize_tags, enrich_tags, lifecycle, restructure, agent runtime,
 agent tools, user mgmt, CLI, image pipeline, user files, export, pdf,
-pdf-with-images, duckdb tools, worker daemon, mine_corpus_evidence,
+pdf-with-images, pdf-OCR, duckdb tools, worker daemon, mine_corpus_evidence,
 mine_session_cooccurrence, propose_views, refresh_entry_extra,
-container, git repo, and CLI upgrade (incl. embedded-mode smoke).
+container, git repo, compression / archive, office (docx + spreadsheet),
+and CLI upgrade (incl. embedded-mode smoke).
 
 ## Status
 
 Marginalia is at v1: end-to-end functional but not yet hardened against
 real-world data. Known gaps:
 
-- Scanned PDFs are flagged `needs_ocr` and skipped (no OCR pipeline yet).
-- Container files (zip / tar / git repos) are accepted but have no
-  pipeline yet — they sit at `ingest_status='pending'`.
 - Recommendation-style background mining (cooccurrence, random walk) is
-  on the next-cycle list.
+  on the next-cycle list — `mine_session_cooccurrence` exists as a
+  placeholder task but the scoring is shallow.
+- No semantic / embedding retrieval. Recall is name + summary + tags +
+  FTS5 against ingested text. Adequate for personal libraries; not
+  intended to replace vector search if you need it.
+- Audio / video files are accepted but have no pipeline. Speech-to-text
+  is a future cycle.
 
 ## License
 

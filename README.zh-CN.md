@@ -97,7 +97,10 @@ Raft 把 Paxos 拆成了三个相对独立的子问题...
 ```
 
 ```
-12 个 task / 12 个 agent 工具 / 3 条 ingest pipeline
+12 个 task / 12 个 agent 工具 / 8 条 ingest pipeline
+  text / pdf（含扫描版 PDF 走 VLM OCR）/ image（VLM 输入自动下采样）
+  docx / spreadsheet / log（含 logrotate 变体）
+  archive（zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab，py7zz 50+ 格式）
 ```
 
 完整设计见 [`design.md`](design.md)。架构概览随 samples 一起：
@@ -192,25 +195,27 @@ MARGINALIA_SERVER=http://server.lan:8000
 # 跑单个 e2e 测试
 .venv/Scripts/python tests/test_agent_e2e.py
 
-# 跑所有 e2e（27 个）
+# 跑所有 e2e（30 个）
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-27 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
+30 个 e2e 测试覆盖：upload / ingest / reflect / dispatcher / purge /
 normalize_tags / enrich_tags / lifecycle / restructure / agent runtime /
 agent tools / user mgmt / CLI / image pipeline / user files / export /
-pdf / pdf-with-images / duckdb tools / worker daemon / mine_corpus_evidence /
-mine_session_cooccurrence / propose_views / refresh_entry_extra /
-container / git repo / cli upgrade（含 embedded 模式 smoke）。
+pdf / pdf-with-images / pdf-OCR / duckdb tools / worker daemon /
+mine_corpus_evidence / mine_session_cooccurrence / propose_views /
+refresh_entry_extra / container / git repo / compression / archive /
+office (docx + spreadsheet) / cli upgrade（含 embedded 模式 smoke）。
 
 ## 状态
 
 V1 端到端功能完整，但未在真实数据规模上压测。已知边界：
 
-- 扫描 PDF 标 `needs_ocr` 后跳过（OCR pipeline 待做）
-- 容器文件（zip / tar / git repo）能接收但还没 pipeline，停在
-  `ingest_status='pending'`
-- 推荐式后台挖掘（共现 / 随机漫游）在下一 cycle 计划里
+- 推荐式后台挖掘（共现 / 随机漫游）在下一 cycle 计划里 ——
+  `mine_session_cooccurrence` 占位 task 已存在，但打分逻辑还很浅
+- 没有语义 / embedding 检索。召回靠 name + summary + tags + FTS5。
+  对个人库够用；如果你需要向量检索请另寻方案
+- 音视频文件能接收但还没 pipeline，语音转写排在未来 cycle
 
 ## 许可证
 
