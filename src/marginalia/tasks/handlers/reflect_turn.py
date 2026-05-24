@@ -1,38 +1,27 @@
-"""reflect_turn handler — design.md §9.4 + §12.3.
+"""reflect_turn handler — single responsibility: write one journal row.
 
-Identity: [🔍 investigator → 🏛️ librarian]. Investigator-style reasoning,
-librarian-style writes. Only this handler may write to journal /
-entry_relations / entry_tags(source='reflect') / file_entries.extra /
-catalogs.extra / views.extra.
+Identity: [🔍 investigator]. Reads one finished conversation and asks the
+`reflect` LLM profile to produce ≤1 short field note for the journal.
+
+Scope (intentionally narrow as of 2026-05-24):
+  - The ONLY write this handler performs is INSERT INTO journal.
+  - Per-conversation increments to entry_relations / entry_tags / *_extra
+    were removed — those signals are weaker per-conversation than the
+    cross-corpus miners (`mine_*`, `enrich_tags`, `refresh_entry_extra`,
+    `propose_views`) that already cover the same ground.
+  - Cross-session synthesis (the "big summary" tier) lives in
+    `summarize_session`, which reads many reflect_turn rows and writes
+    `source_kind='insight'` journal rows — see [[journal-tiers]].
 
 Inputs:
   payload = {"conversation_id": "..."}
 
 Flow:
-  1. Idempotence check: if a task_outcomes row exists for this conversation
-     under task_kind='reflect_turn', short-circuit (no-op).
-  2. Pull the conversation (full fact record: user_message, agent_response,
-     tool_calls, llm_calls). Refuse to reflect on conversations not yet ended.
-  3. Resolve the involved entry_ids (from tool_calls payload — the agent's
-     read/write trail). For each, fetch current metadata: file_entry,
-     associated file's summary/description/kind, current entry_tags, current
-     pairwise entry_relations.
-  4. Build the prompt and call the `reflect` LLM profile (strict JSON output).
-  5. Single transaction:
-     - INSERT journal rows
-     - For entry_relations: ensure (a_id < b_id) ordering; INSERT-or-UPDATE
-       (observation_count++, last_observed_at, optionally append note)
-     - INSERT entry_tags rows with source='reflect' (skip if pair already
-       exists)
-     - UPDATE file_entries.extra (per `entry_extra_updates`)
-     - UPDATE catalogs.extra (per `catalog_extra_updates`)
-     - UPDATE views.extra (per `view_extra_updates`)
-     - record_outcome(task_kind='reflect_turn', object_kind='conversation',
-       object_id=conversation_id, outcome='applied', detail=counts)
-  6. NEVER touch files.summary/description/extra/kind/ingested_at — design
-     §14.2 guarantee.
-  7. Audit reads: design §14.3 #2 forbids reading audit_events here. We use
-     task_outcomes for the idempotence check.
+  1. Idempotence: short-circuit on existing task_outcomes row.
+  2. Pull the conversation; require it to be ended.
+  3. Resolve involved entry_ids from tool_calls payload (read trail).
+  4. Call the `reflect` LLM profile with strict JSON schema.
+  5. INSERT 0..1 journal rows; record_outcome.
 """
 from __future__ import annotations
 
@@ -41,19 +30,15 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from marginalia.db.models import (
-    AuditEvent,
-    Catalog,
     Conversation,
-    EntryRelation,
     EntryTag,
     File,
     FileEntry,
     Journal,
     Tag,
-    View,
 )
 from marginalia.db.session import session_scope
 from marginalia.llm import (
@@ -75,53 +60,27 @@ ENTRY_LIMIT = 30  # cap how many entries we feed the model context for
 
 REFLECT_SYSTEM = """You are Marginalia's reflection investigator.
 
-You read one finished conversation between a user and the Marginalia agent —
-along with the current metadata of the file_entries the agent touched — and
-decide what is worth remembering for next time.
+You read one finished conversation between the user and the Marginalia
+agent, plus current metadata of the file_entries the agent touched, and
+write ONE short field note for the agent's journal — the per-turn bullet
+in a notebook that a later "session summary" pass will distill.
 
-Your output drives the AI-internal memory layer. Be conservative: it is fine
-to return nothing in any field, the framework will simply skip those writes.
-Do not invent entries, files, or relations that were not in the conversation.
+Write the note for your future self skimming this session: what was the
+useful path, which entries paid off, what dead-end is worth remembering?
+Tie it to specific entry_ids if the insight is about them. Keep it terse.
 
-Six independent things you may produce (any or none of them):
+If nothing in this conversation is worth remembering, return an empty
+journal_entries list — the framework will skip the write.
 
-1. journal_entries — short field notes, one self-contained insight per entry.
-   Each note answers: "what would I want my future self to find when looking
-   for similar work?" Tie to specific entry_ids if the insight is about them.
-   You may use tags=["hint:restructure_catalogs"] etc. to leave hints for
-   offline maintenance tasks.
-
-2. entry_relations — pairwise associations between two entries. Use whenever
-   the conversation revealed two entries belong together, contradict, build
-   on each other, or share a deeper purpose. The framework will dedupe pairs
-   and increment observation_count if a pair was seen before.
-
-3. entry_tag_additions — new (entry_id, tag) pairs you want attached. Use
-   when the conversation revealed a missing tag — e.g. you discovered a doc
-   is actually about "consensus algorithms" but it lacked that tag.
-
-4. entry_extra_updates — overwrite the entry's accumulated insight (free
-   text). Use when you want to refresh the agent's working memory of WHAT
-   THIS ENTRY MEANS at this position right now. Empty string means clear.
-
-5. catalog_extra_updates / view_extra_updates — same idea but for catalogs
-   or views the conversation touched.
-
-Output ONLY one JSON object matching the supplied schema. No prose, no fences.
+Output ONLY one JSON object matching the supplied schema. No prose, no
+fences.
 """
 
 
 REFLECT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": [
-        "journal_entries",
-        "entry_relations",
-        "entry_tag_additions",
-        "entry_extra_updates",
-        "catalog_extra_updates",
-        "view_extra_updates",
-    ],
+    "required": ["journal_entries"],
     "properties": {
         "journal_entries": {
             "type": "array",
@@ -133,71 +92,6 @@ REFLECT_SCHEMA: dict[str, Any] = {
                     "note": {"type": "string"},
                     "entry_ids": {"type": "array", "items": {"type": "string"}},
                     "tags": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        },
-        "entry_relations": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["entry_a_id", "entry_b_id", "note"],
-                "properties": {
-                    "entry_a_id": {"type": "string"},
-                    "entry_b_id": {"type": "string"},
-                    "note": {"type": "string"},
-                },
-            },
-        },
-        "entry_tag_additions": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["entry_id", "name", "facet"],
-                "properties": {
-                    "entry_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "facet": {
-                        "type": "string",
-                        "enum": ["topic", "form", "time", "source", "language", "extra"],
-                    },
-                },
-            },
-        },
-        "entry_extra_updates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["entry_id", "extra"],
-                "properties": {
-                    "entry_id": {"type": "string"},
-                    "extra": {"type": "string"},
-                },
-            },
-        },
-        "catalog_extra_updates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["catalog_id", "extra"],
-                "properties": {
-                    "catalog_id": {"type": "string"},
-                    "extra": {"type": "string"},
-                },
-            },
-        },
-        "view_extra_updates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["view_id", "extra"],
-                "properties": {
-                    "view_id": {"type": "string"},
-                    "extra": {"type": "string"},
                 },
             },
         },
@@ -215,8 +109,6 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
     if not conversation_id:
         raise ValueError("reflect_turn payload missing conversation_id")
 
-    # --- 1. idempotence: skip if task_outcomes row exists for this conv.
-    #         (design.md §14.3 — never read audit_events for business logic.)
     async with session_scope() as session:
         already = await has_outcome(
             session,
@@ -234,13 +126,14 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
         if conversation is None:
             raise ValueError(f"conversation {conversation_id!r} not found")
         if conversation.ended_at is None:
-            raise ValueError(f"conversation {conversation_id!r} not yet ended; cannot reflect")
+            raise ValueError(
+                f"conversation {conversation_id!r} not yet ended; cannot reflect"
+            )
 
         involved_entry_ids = _collect_involved_entry_ids(conversation)
         entry_metadata = await _fetch_entry_metadata(session, involved_entry_ids)
         await session.commit()
 
-    # --- 2. LLM call (outside DB transaction)
     payload_for_llm = {
         "conversation": {
             "user_message": conversation.user_message,
@@ -251,16 +144,19 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
         "involved_entries": entry_metadata,
     }
     user_text = (
-        "Below is one finished conversation along with the current metadata of "
-        "the file_entries the agent touched. Decide what to remember.\n\n"
-        f"<conversation_and_context>\n{json.dumps(payload_for_llm, ensure_ascii=False)}\n</conversation_and_context>"
+        "Below is one finished conversation along with the current "
+        "metadata of the file_entries the agent touched. Decide whether "
+        "to write one short journal note (or skip).\n\n"
+        f"<conversation_and_context>\n"
+        f"{json.dumps(payload_for_llm, ensure_ascii=False)}\n"
+        "</conversation_and_context>"
     )
 
     client = get_chat_client("reflect")
     resp = await client.complete(ChatRequest(
         system=REFLECT_SYSTEM,
         messages=[ChatMessage(role="user", content=[TextBlock(text=user_text)])],
-        max_tokens=4096,
+        max_tokens=1024,
         json_schema=REFLECT_SCHEMA,
         temperature=0.3,
     ))
@@ -269,9 +165,10 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
 
     data = resp.parsed_json
 
-    # --- 3. persist all writes in one transaction
     async with session_scope() as session:
-        await _persist_reflection(session, conversation_id=conversation_id, data=data)
+        await _persist_reflection(
+            session, conversation_id=conversation_id, data=data,
+        )
         await session.commit()
 
 
@@ -350,180 +247,28 @@ async def _persist_reflection(
     data: dict[str, Any],
 ) -> None:
     now = _utcnow()
-    counts = {
-        "journal_entries": 0,
-        "relations_inserted": 0,
-        "relations_incremented": 0,
-        "tag_additions": 0,
-        "entry_extra_updates": 0,
-        "catalog_extra_updates": 0,
-        "view_extra_updates": 0,
-        "tags_created": 0,
-    }
+    journal_count = 0
 
-    # --- journal ----------------------------------------------------------
     for j in data.get("journal_entries") or []:
+        note = (j.get("note") or "").strip()
+        if not note:
+            continue
         session.add(Journal(
             id=new_id(),
             conversation_id=conversation_id,
-            note=j["note"],
+            note=note,
             entry_ids=list(j.get("entry_ids") or []),
             tags=list(j.get("tags") or []),
             source_kind="reflect_turn",
             created_at=now,
         ))
-        counts["journal_entries"] += 1
-
-    # --- entry_relations --------------------------------------------------
-    for rel in data.get("entry_relations") or []:
-        a_raw = rel["entry_a_id"]
-        b_raw = rel["entry_b_id"]
-        if a_raw == b_raw:
-            log.warning("reflect_turn: skip self-relation %s", a_raw)
-            continue
-        a, b = sorted((a_raw, b_raw))
-        existing = (
-            await session.execute(
-                select(EntryRelation).where(
-                    EntryRelation.entry_a_id == a,
-                    EntryRelation.entry_b_id == b,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is None:
-            # only insert if both entries exist (FK)
-            if not await _entries_exist(session, [a, b]):
-                log.warning("reflect_turn: skip relation referencing missing entries %s/%s", a, b)
-                continue
-            session.add(EntryRelation(
-                id=new_id(),
-                entry_a_id=a,
-                entry_b_id=b,
-                note=rel["note"],
-                source_kind="reflect",
-                last_observed_at=now,
-                observation_count=1,
-                created_at=now,
-            ))
-            counts["relations_inserted"] += 1
-        else:
-            existing.observation_count = (existing.observation_count or 0) + 1
-            existing.last_observed_at = now
-            new_note = rel.get("note") or ""
-            if new_note and new_note not in (existing.note or ""):
-                existing.note = (existing.note or "") + "\n---\n" + new_note
-            counts["relations_incremented"] += 1
-
-    # --- entry_tag_additions ---------------------------------------------
-    for ta in data.get("entry_tag_additions") or []:
-        entry_id = ta["entry_id"]
-        if not await _entries_exist(session, [entry_id]):
-            continue
-        tag_id, created = await _resolve_or_create_tag(
-            session, name=ta["name"], facet=ta["facet"], now=now
-        )
-        if created:
-            counts["tags_created"] += 1
-        existing = (
-            await session.execute(
-                select(EntryTag).where(
-                    EntryTag.entry_id == entry_id, EntryTag.tag_id == tag_id
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is None:
-            session.add(EntryTag(
-                entry_id=entry_id,
-                tag_id=tag_id,
-                source="reflect",
-                created_at=now,
-            ))
-            counts["tag_additions"] += 1
-
-    # --- entry_extra_updates ---------------------------------------------
-    for u in data.get("entry_extra_updates") or []:
-        entry_id = u["entry_id"]
-        extra = u.get("extra") or None
-        result = await session.execute(
-            update(FileEntry)
-            .where(FileEntry.id == entry_id, FileEntry.deleted_at.is_(None))
-            .values(extra=extra, updated_at=now)
-        )
-        if result.rowcount:
-            counts["entry_extra_updates"] += 1
-
-    # --- catalog_extra_updates -------------------------------------------
-    for u in data.get("catalog_extra_updates") or []:
-        result = await session.execute(
-            update(Catalog)
-            .where(Catalog.id == u["catalog_id"], Catalog.deleted_at.is_(None))
-            .values(extra=(u.get("extra") or None), updated_at=now)
-        )
-        if result.rowcount:
-            counts["catalog_extra_updates"] += 1
-
-    # --- view_extra_updates ----------------------------------------------
-    for u in data.get("view_extra_updates") or []:
-        result = await session.execute(
-            update(View)
-            .where(View.id == u["view_id"])
-            .values(extra=(u.get("extra") or None), updated_at=now)
-        )
-        if result.rowcount:
-            counts["view_extra_updates"] += 1
+        journal_count += 1
 
     await record_outcome(
         session,
         task_kind="reflect_turn",
         object_kind="conversation",
         object_id=conversation_id,
-        outcome="applied",
-        detail=counts,
+        outcome="applied" if journal_count else "noop",
+        detail={"journal_entries": journal_count},
     )
-
-
-async def _entries_exist(session, entry_ids: list[str]) -> bool:
-    if not entry_ids:
-        return False
-    rows = (
-        await session.execute(
-            select(FileEntry.id).where(FileEntry.id.in_(entry_ids))
-        )
-    ).scalars().all()
-    return len(rows) == len(set(entry_ids))
-
-
-async def _resolve_or_create_tag(
-    session, *, name: str, facet: str, now: datetime
-) -> tuple[str, bool]:
-    """Return (tag_id, created). Follows alias_of chain if present."""
-    existing = (
-        await session.execute(
-            select(Tag).where(Tag.name == name, Tag.facet == facet)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        if existing.alias_of:
-            return existing.alias_of, False
-        existing.doc_count = (existing.doc_count or 0) + 1
-        existing.last_used_at = now
-        return existing.id, False
-
-    tag = Tag(
-        id=new_id(),
-        name=name,
-        facet=facet,
-        alias_of=None,
-        doc_count=1,
-        last_used_at=now,
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(tag)
-    await session.flush()
-    await AuditEvent.append(
-        session,
-        kind="tag_created",
-        payload={"tag_id": tag.id, "name": name, "facet": facet, "source": "reflect"},
-    )
-    return tag.id, True

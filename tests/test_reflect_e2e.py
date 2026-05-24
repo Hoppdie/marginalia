@@ -3,21 +3,19 @@
 Run:
     .venv/Scripts/python tests/test_reflect_e2e.py
 
-Verifies:
+Verifies (post-2026-05-24 reflect_turn slim-down — see [[journal-tiers]]):
   1. Synthesize a session + a finished conversation that touched 2 entries.
-  2. Stub the `reflect` LLM client to return a canned reflection covering
-     all 6 output channels.
+  2. Stub the `reflect` LLM client to return a canned reflection containing
+     ONE journal entry (the only output channel reflect_turn now produces).
   3. Run the handler. Verify writes:
      - 1 journal row with entry_ids + tags
-     - 1 entry_relations row, canonical (a < b) order
-     - 2 entry_tags rows with source='reflect' (one new, one re-used)
-     - 1 file_entry.extra updated
-     - 1 catalog.extra updated
-     - 1 view.extra updated
      - task_outcomes row (task_kind='reflect_turn', object_kind='conversation')
-       with non-zero detail counts
-  4. Re-run handler — observation_count increments to 2.
-  5. Re-re-run — idempotence kicks in (audit already there), no-op.
+       with detail.journal_entries == 1
+     - NO entry_relations / EntryTag(source='reflect') / *_extra writes
+  4. Re-run on a different conversation referencing the same pair —
+     a SECOND independent journal row appears (no more pairwise increments;
+     that work has moved to mine_* + vet_relations).
+  5. Re-run the SAME conversation_id — idempotence kicks in (no-op).
 """
 from __future__ import annotations
 
@@ -64,7 +62,7 @@ from marginalia.utils.ids import new_id
 REFLECT_CALLS: list[ChatRequest] = []
 
 
-def _make_fake_reflect(entry_a: str, entry_b: str, catalog_id: str, view_id: str):
+def _make_fake_reflect(entry_a: str, entry_b: str):
     payload = {
         "journal_entries": [
             {
@@ -72,27 +70,6 @@ def _make_fake_reflect(entry_a: str, entry_b: str, catalog_id: str, view_id: str
                 "entry_ids": [entry_a, entry_b],
                 "tags": ["hint:enrich_tags"],
             }
-        ],
-        "entry_relations": [
-            {
-                "entry_a_id": entry_a,
-                "entry_b_id": entry_b,
-                "note": "Compared in user-driven analysis of consensus mechanisms.",
-            }
-        ],
-        "entry_tag_additions": [
-            # One uses an existing tag (markdown/form already there); one new.
-            {"entry_id": entry_a, "name": "consensus", "facet": "topic"},
-            {"entry_id": entry_b, "name": "markdown", "facet": "form"},
-        ],
-        "entry_extra_updates": [
-            {"entry_id": entry_a, "extra": "Cross-referenced with paper B during consensus discussion."}
-        ],
-        "catalog_extra_updates": [
-            {"catalog_id": catalog_id, "extra": "Heavily revisited; consider promoting subtree."}
-        ],
-        "view_extra_updates": [
-            {"view_id": view_id, "extra": "User actively browses this view for consensus material."}
         ],
     }
 
@@ -149,7 +126,6 @@ async def _seed_world():
                     created_at=now, updated_at=now)
         s.add_all([folder, catalog, view])
 
-        # two file rows
         from marginalia.db.models import File
         f1 = File(id=new_id(), storage_key="aa/bb/k1", sha256="a"*64, size_bytes=100,
                   mime_type="text/markdown", original_ext=".md", kind="text",
@@ -174,13 +150,11 @@ async def _seed_world():
                        created_at=now, updated_at=now)
         s.add_all([e1, e2])
 
-        # pre-existing markdown/form tag (so reflect re-uses it, not creates)
         tag_md = Tag(id=new_id(), name="markdown", facet="form",
                      alias_of=None, doc_count=5, last_used_at=now,
                      created_at=now, updated_at=now)
         s.add(tag_md)
 
-        # session + finished conversation that touched both entries via tool_calls
         session_row = Session(id=new_id(), started_at=now, ended_at=_now(),
                               end_reason="normal",
                               initiating_user_message="compare paper A and B",
@@ -217,6 +191,7 @@ async def _seed_world():
         return {
             "entry_a": e1.id, "entry_b": e2.id,
             "catalog_id": catalog.id, "view_id": view.id,
+            "session_id": session_row.id,
             "conversation_id": conv.id,
             "preexisting_tag_md_id": tag_md.id,
         }
@@ -228,61 +203,44 @@ async def main():
     await _create_schema()
     seeded = await _seed_world()
 
-    fake = _make_fake_reflect(
-        entry_a=seeded["entry_a"],
-        entry_b=seeded["entry_b"],
-        catalog_id=seeded["catalog_id"],
-        view_id=seeded["view_id"],
-    )
+    fake = _make_fake_reflect(entry_a=seeded["entry_a"], entry_b=seeded["entry_b"])
     _install_fake_reflect_client(fake)
 
     from marginalia.tasks.handlers.reflect_turn import handle_reflect_turn
 
     factory = get_session_factory()
 
-    # --- pass 1: produce all writes -----------------------------------------
+    # --- pass 1: produce the journal write ----------------------------------
     await handle_reflect_turn({"conversation_id": seeded["conversation_id"]})
     assert len(REFLECT_CALLS) == 1, f"expected 1 reflect call, got {len(REFLECT_CALLS)}"
 
     async with factory() as s:
-        # journal
+        # journal: exactly one row
         journals = (await s.execute(select(Journal).where(
             Journal.conversation_id == seeded["conversation_id"]))).scalars().all()
         assert len(journals) == 1
         j = journals[0]
+        assert j.source_kind == "reflect_turn"
         assert seeded["entry_a"] in j.entry_ids and seeded["entry_b"] in j.entry_ids
         assert "hint:enrich_tags" in j.tags
 
-        # entry_relations canonical ordering
+        # entry_relations: NONE — reflect_turn no longer writes them
         rels = (await s.execute(select(EntryRelation))).scalars().all()
-        assert len(rels) == 1
-        r = rels[0]
-        a, b = sorted((seeded["entry_a"], seeded["entry_b"]))
-        assert (r.entry_a_id, r.entry_b_id) == (a, b)
-        assert r.observation_count == 1
-        assert r.source_kind == "reflect"
+        assert len(rels) == 0, f"reflect_turn should not write entry_relations; found {len(rels)}"
 
-        # tags: "consensus" (new) + reuse of existing "markdown"
-        ets = (await s.execute(select(EntryTag).where(EntryTag.source == "reflect"))).scalars().all()
-        assert len(ets) == 2
-        for et in ets:
-            assert et.source == "reflect"
+        # entry_tags(source='reflect'): NONE — reflect_turn no longer writes them
+        ets = (await s.execute(
+            select(EntryTag).where(EntryTag.source == "reflect")
+        )).scalars().all()
+        assert len(ets) == 0, f"reflect_turn should not write entry_tags; found {len(ets)}"
 
-        # markdown tag must NOT have been duplicated
-        md_count = (await s.execute(text(
-            "SELECT COUNT(*) FROM tags WHERE name = 'markdown' AND facet = 'form'"
-        ))).scalar()
-        assert md_count == 1, f"markdown tag duplicated: {md_count}"
-
-        # file_entry extra
+        # file_entry / catalog / view extras: untouched
         e_a = await s.get(FileEntry, seeded["entry_a"])
-        assert e_a.extra and "Cross-referenced" in e_a.extra
-
-        # catalog / view extras
+        assert e_a.extra is None, f"entry.extra should remain None; got {e_a.extra!r}"
         cat = await s.get(Catalog, seeded["catalog_id"])
-        assert cat.extra and "promoting" in cat.extra
+        assert cat.extra is None, f"catalog.extra should remain None; got {cat.extra!r}"
         view = await s.get(View, seeded["view_id"])
-        assert view.extra and "consensus material" in view.extra
+        assert view.extra is None, f"view.extra should remain None; got {view.extra!r}"
 
         # files.* must be untouched (write-once)
         from marginalia.db.models import File
@@ -290,13 +248,14 @@ async def main():
         for f in all_files:
             assert f.summary in ("Paper A", "Paper B"), f"file.summary mutated: {f.summary!r}"
 
-        # task_outcomes row present
         rt_done = (await s.execute(text(
             "SELECT detail FROM task_outcomes "
             "WHERE task_kind='reflect_turn' AND object_id=:c"
         ), {"c": seeded["conversation_id"]})).scalars().all()
         assert len(rt_done) == 1
-        print("[pass 1] reflect_turn task_outcomes detail:", rt_done[0])
+        detail = json.loads(rt_done[0]) if isinstance(rt_done[0], str) else rt_done[0]
+        assert detail.get("journal_entries") == 1
+        print("[pass 1] reflect_turn task_outcomes detail:", detail)
 
     # --- pass 2: same conversation_id → idempotence kicks in ----------------
     await handle_reflect_turn({"conversation_id": seeded["conversation_id"]})
@@ -306,16 +265,12 @@ async def main():
             Journal.conversation_id == seeded["conversation_id"]))).scalars().all()
         assert len(journals) == 1, "journal duplicated on idempotent re-run"
 
-    # --- pass 3: simulate a second conversation seeing the same pair --------
-    # (delete the audit row so we run again, but using a NEW conversation id —
-    # this is what would happen for a follow-up turn)
+    # --- pass 3: NEW conversation re-touching same pair → independent row --
     async with factory() as s:
         now = _now()
         conv2 = Conversation(
             id=new_id(),
-            session_id=(await s.execute(text(
-                "SELECT session_id FROM conversations WHERE id=:c"
-            ), {"c": seeded["conversation_id"]})).scalar_one(),
+            session_id=seeded["session_id"],
             turn_index=1,
             started_at=now,
             ended_at=_now(),
@@ -337,15 +292,16 @@ async def main():
     assert len(REFLECT_CALLS) == 2
 
     async with factory() as s:
-        # observation_count incremented
+        # second journal row exists; INDEPENDENT (not a merge into the first)
+        journals_all = (await s.execute(select(Journal))).scalars().all()
+        assert len(journals_all) == 2
+        assert {j.conversation_id for j in journals_all} == {
+            seeded["conversation_id"], conv2_id,
+        }
+        # entry_relations still empty — pairwise observation_count is now
+        # exclusively the territory of mine_* + vet_relations.
         rels = (await s.execute(select(EntryRelation))).scalars().all()
-        assert len(rels) == 1
-        assert rels[0].observation_count == 2, f"observation_count={rels[0].observation_count}"
-        # note appended (deduplicated by substring check)
-        assert "consensus mechanisms" in rels[0].note
-        # extra still single value (overwritten not duplicated)
-        e_a = await s.get(FileEntry, seeded["entry_a"])
-        assert e_a.extra.count("Cross-referenced") == 1
+        assert len(rels) == 0
 
     print("\nALL REFLECT E2E CHECKS PASSED")
 

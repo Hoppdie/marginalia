@@ -1,14 +1,25 @@
 """search_journal — design.md §10.1.
 
 The investigator's first move: "did I work on something like this before?"
-Returns recent journal notes filtered by free-text / entry_id / tags / since.
+
+The journal is two tiers in one table (see [[journal-tiers]]):
+  - `insight`: durable cross-session distillations (default kind).
+  - `reflect_turn`: per-turn bullets from one specific session.
+
+Defaults to `kinds=["insight"]` so a fresh user message goes straight to
+durable memory. Pass `kinds=["reflect_turn"]` together with a
+`conversation_id` to skim the per-turn bullets of one session.
+
+Superseded insight rows (whose `superseded_by_id IS NOT NULL`) are hidden
+by default — the chain replacement IS the answer. Set
+`include_superseded=true` to see history.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.agent.tools import ToolContext, tool
@@ -32,6 +43,27 @@ SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {"type": "string"},
             "description": "Match notes carrying ALL of these tags.",
+        },
+        "kinds": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["insight", "reflect_turn"]},
+            "description": (
+                "Which journal tiers to search. Default ['insight']: "
+                "durable cross-session memory. Pass ['reflect_turn'] with "
+                "conversation_id to read one session's per-turn bullets."
+            ),
+        },
+        "conversation_id": {
+            "type": "string",
+            "description": "Restrict to notes attached to this conversation.",
+        },
+        "include_superseded": {
+            "type": "boolean",
+            "description": (
+                "If true, include insight rows that have been replaced by a "
+                "newer version. Default false — only the current version "
+                "of each chain is returned."
+            ),
         },
         "since_days": {
             "type": "integer",
@@ -57,9 +89,10 @@ SCHEMA: dict[str, Any] = {
 @tool(
     name="search_journal",
     description=(
-        "Skim your investigator's notebook for past notes related to the "
-        "current question. Always your first move on a fresh user message — "
-        "before reading any file."
+        "Skim your investigator's notebook for past insights. Always your "
+        "first move on a fresh user message — before reading any file. "
+        "Defaults to durable cross-session insights; pass kinds=['reflect_turn'] "
+        "+ conversation_id for one session's per-turn bullets."
     ),
     schema=SCHEMA,
 )
@@ -71,12 +104,22 @@ async def search_journal(
     text_q = args.get("text")
     entry_id = args.get("entry_id")
     tags = args.get("tags") or []
+    kinds = list(args.get("kinds") or ["insight"])
+    conversation_id = args.get("conversation_id")
+    include_superseded = bool(args.get("include_superseded") or False)
     since_days = int(args.get("since_days") or 90)
     limit = min(int(args.get("limit") or 10), 50)
     order = args.get("order") or "recent_first"
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
-    stmt = select(Journal).where(Journal.created_at >= cutoff)
+    stmt = select(Journal).where(
+        Journal.created_at >= cutoff,
+        Journal.source_kind.in_(kinds),
+    )
+    if conversation_id:
+        stmt = stmt.where(Journal.conversation_id == conversation_id)
+    if not include_superseded:
+        stmt = stmt.where(Journal.superseded_by_id.is_(None))
     if text_q:
         like = f"%{text_q}%"
         stmt = stmt.where(Journal.note.ilike(like))
@@ -110,6 +153,7 @@ async def search_journal(
                 "entry_ids": list(j.entry_ids or []),
                 "tags": list(j.tags or []),
                 "source_kind": j.source_kind,
+                "superseded_by_id": j.superseded_by_id,
                 "created_at": j.created_at.isoformat() if j.created_at else None,
             }
             for j in filtered

@@ -170,14 +170,16 @@ async def _seed():
         s.add(old_conv)
         await s.flush()
 
-        # An old journal note the agent may surface during search_journal
+        # An old insight the agent should surface during search_journal.
+        # search_journal defaults to kinds=['insight'] now (durable
+        # cross-session memory) — see [[journal-tiers]].
         s.add(Journal(
             id=new_id(),
             conversation_id=old_conv.id,
             note="raft 共识 leader 选举",
             entry_ids=[e.id],
             tags=["topic:consensus"],
-            source_kind="reflect_turn",
+            source_kind="insight",
             created_at=_now(),
         ))
         await s.commit()
