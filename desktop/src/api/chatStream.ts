@@ -12,11 +12,12 @@
  *  pass each frame through onEvent with the raw text so callers can
  *  decide how to decode per type.
  */
-import type { ChatEvent, ChatEventType } from "@/types/api";
+import type { ChatEvent, ChatEventType, ChatMode } from "@/types/api";
 import { getBaseUrl, resolveTauriBaseUrl } from "@/api/client";
 
 export interface ChatStreamOptions {
   signal?: AbortSignal;
+  mode?: ChatMode;
   onEvent: (ev: ChatEvent) => void;
   onError?: (err: unknown) => void;
 }
@@ -34,7 +35,7 @@ export async function streamChat(
       "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, mode: opts.mode ?? "deep" }),
     signal: opts.signal,
   });
   if (!res.ok || !res.body) {

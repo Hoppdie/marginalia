@@ -1,30 +1,44 @@
 # Marginalia Design
 
-Marginalia is an AI retrieval infrastructure for a private heterogeneous knowledge base. It is built around four commitments:
+Marginalia is a local-first research agent for a private heterogeneous
+knowledge base. It is built around five commitments:
 
-1. **Structured retrieval before raw reading**: the agent narrows candidates through folders, catalogs, tags, views, summaries, extra fields, journal recall, and relation discovery before opening source files.
+1. **Structured retrieval before raw reading**: the agent narrows candidates through journals, folders, catalogs, tags, views, summaries, extra fields, high-level recall, and relation discovery before opening source files.
 2. **Persistent investigation memory**: completed turns write compact journal entries. Future turns search those entries before repeating work.
 3. **Recommendation-style evidence discovery**: background tasks mine relations between entries, LLM-vet noisy edges, and expose related entries during search and metadata reads.
-4. **Original-source verification**: answers are expected to cite source entries and, when possible, exact quotes or physical PDF pages.
+4. **Optional semantic assistance, not vector-first control**: embeddings, `sqlite-vec`, and reranking can improve recall when configured, but they sit behind the structured funnel rather than replacing it.
+5. **Original-source verification**: answers are expected to cite source entries and, when possible, exact quotes or physical PDF pages.
 
 This document describes current code behavior. It is not a product roadmap.
 
 ## 1. Retrieval Model
 
-Marginalia deliberately avoids a vector-first design. The core retrieval path is a funnel:
+Marginalia deliberately avoids a vector-first design. The core retrieval path
+is a funnel, with `recall_knowledge` as the preferred first-pass tool for broad
+material location:
 
 ```text
 question
-  -> search_journal
-  -> list_folder / search_metadata / materialize_view
+  -> recall_knowledge
+      -> resolve tag hints
+      -> search_journal
+      -> search_metadata by tags/text
+      -> optional semantic recall
+      -> RRF-style merge and scoring
+      -> optional rerank
+      -> quota or reranked evidence selection
+      -> one-hop related-entry expansion
   -> read_entries_metadata
+  -> focused list_folder / search_metadata / materialize_view follow-up
   -> related_entries / discover
   -> read_files
   -> cited answer
   -> reflect_turn journal entry
 ```
 
-The first stages are cheap and structured; the final stage reads original content. The LLM is responsible for semantic judgement, but it must operate through tools with explicit database and file boundaries.
+The first stages are cheap and structured; the final stage reads original
+content. The LLM is responsible for semantic judgement, but it must operate
+through tools with explicit database and file boundaries.
 
 ### 1.1 Search Surfaces
 
@@ -33,11 +47,29 @@ The first stages are cheap and structured; the final stage reads original conten
 - `files.summary`, `files.extra`, and `file_entries.extra` capture content and position-specific interpretation.
 - `catalogs`, `views`, `tags`, and `entry_tags` provide structured access points.
 - `entry_relations` supplies recommendation-style neighbours.
+- `semantic-index/default` can supply optional embedding candidates when
+  `SEMANTIC_RECALL_ENABLED=true`.
 - `read_files` is the verification layer and returns source text slices.
 
-Text search in metadata paths is SQL `ILIKE` over the compact fields above, not embedding search.
+Text search in metadata paths uses compact metadata fields and the local
+metadata search implementation; it is separate from embedding search.
+Embedding recall is optional and never reuses chat, vision, or ingest keys.
 
-### 1.2 Citation Contract
+### 1.2 Capability Boundary
+
+Marginalia is strongest for source-grounded investigation over a personal
+library: finding relevant materials, reading the right slices, reconciling
+evidence, and producing a cited report. For quick factual lookup it behaves
+like a hybrid RAG system. For research-style questions, the full ReAct workflow
+can be more capable than one-shot top-k RAG because it can iterate through
+journal recall, metadata inspection, relation discovery, and source reads.
+
+This is not a claim of general benchmark SOTA. The current validation supports
+a narrower claim: on local SciFact evaluation, the ReAct report workflow beat
+a one-shot RAG report baseline in most sampled end-to-end comparisons, with
+higher latency and more LLM calls.
+
+### 1.3 Citation Contract
 
 Agent answers use a machine-parseable footnote protocol:
 
@@ -143,7 +175,11 @@ Fields include:
 
 #### `views`
 
-Saved AI-discovered filters over the library. `filter_spec` can combine catalog, tag, lifecycle, and related structured filters. `materialize_view` computes members on demand.
+Saved AI-discovered filters over the library. `filter_spec` can combine
+catalog, tag, lifecycle, and related structured filters. `materialize_view`
+computes members on demand. Views are explicit tools, not an invisible global
+filter: `search_metadata(view_id=...)` searches within a materialized view when
+the agent chooses that path.
 
 #### `tags` and `tag_aliases`
 
@@ -313,6 +349,14 @@ The executor receives:
 
 It can call registered tools and then produce a cited answer.
 
+Execution mode is request-scoped:
+
+- `deep` is the default full ReAct loop and uses the configured execute-turn
+  budget;
+- `quick` still runs the planner, then caps execute to three calls: the first
+  two may call tools, while the third disables tools and must answer from
+  collected evidence.
+
 Runtime guards:
 
 - duplicate call reuse;
@@ -330,6 +374,7 @@ The snapshot is an overview, not evidence. Journal rows in the snapshot are froz
 Registered tools:
 
 ```text
+recall_knowledge
 search_journal
 list_folder
 list_catalogs
@@ -347,12 +392,44 @@ generate_chart
 
 Important retrieval tools:
 
+- `recall_knowledge`: preferred broad material-recall entrypoint. It resolves tag hints, searches journal notes and metadata, optionally adds semantic candidates, ranks/merges the pool, optionally reranks, applies evidence selection, and returns candidates for metadata verification and source reads.
 - `search_journal`: prior investigation memory; supports text, entry, tag, and time filters. Tag lookup is OR-style.
 - `search_metadata`: structured candidate narrowing by text, tags, catalog, folder, view, kind, and lifecycle.
 - `read_entries_metadata`: compact metadata, sections, coverage, and related entries.
 - `read_files`: original-source verification by offset, section, heading, line, page, PDF label, paragraph, regex, archive member, or table-aware slice.
 - `query_sql`: DuckDB-backed querying for supported table formats.
 - `analyze_container`: inspect archive members without fully flattening every possible nested item into the main library.
+
+### 5.1 Optional Semantic Recall and Rerank
+
+Semantic recall is opt-in:
+
+```text
+EMBEDDING_API_KEY=...
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v4
+SEMANTIC_RECALL_ENABLED=true
+SEMANTIC_INDEX_BACKEND=auto        # auto, file, sqlite-vec
+```
+
+The embedding profile is separate from `LLM_*`; no chat, ingest, or vision key
+is reused implicitly. The current public CLI builder is eval-dataset scoped.
+The internal index API can index arbitrary entry IDs, but a whole-library
+semantic-index command is not exposed yet.
+
+Rerank is also opt-in:
+
+```text
+RERANK_ENABLED=true
+RERANK_API_KEY=...
+RERANK_MODEL=qwen3-rerank
+RERANK_TOP_N=80
+EVIDENCE_SELECTION=quota           # quota or rerank
+```
+
+`EVIDENCE_SELECTION=quota` preserves diversity across overlapping, tag,
+lexical, and semantic signals. `EVIDENCE_SELECTION=rerank` takes the reranked
+order directly.
 
 ## 6. Evidence Discovery
 
@@ -403,7 +480,49 @@ periodic_tick
 
 LLM-dependent task kinds fail fast when required profile credentials are missing.
 
-## 8. Storage
+## 8. Evaluation and Validation
+
+Evaluation is part of the design because the system's goal is a final
+source-grounded report, not only a ranked list.
+
+`marginalia eval` has three layers:
+
+```text
+run
+  -> candidate-pool metrics: hit@k, candidate_recall@k, nDCG, MRR
+
+answer / answer-run
+  -> bounded retrieval + bounded source reads + one final-answer LLM call
+  -> evidence hit, citation hit, optional label accuracy
+
+compare-report
+  -> one-shot RAG report
+  -> full ReAct report workflow
+  -> blind pairwise judge, with gold labels prioritized when available
+```
+
+External BEIR-style datasets are imported as normal file entries. Import runs
+ingest synchronously and supports `--concurrency` and `--resume`. Semantic
+index builds also support batched concurrent embedding requests and resume.
+
+Current local SciFact validation:
+
+```text
+retrieval, 300 queries, recall_knowledge + rerank top-80:
+  MRR 0.7226, hit@10 0.8800, hit@100 0.9133
+
+bounded answer-run, 300 queries, rerank top-80 + quota:
+  evidence hit 0.8667, citation hit 0.7133, label accuracy 0.8085
+
+end-to-end report comparison, 30 queries:
+  ReAct wins 26, one-shot RAG wins 2, ties 2, timeouts 1
+```
+
+These results justify describing Marginalia as strong for personal-library
+research reports, while keeping the claim bounded to local validation and the
+tested comparison setup.
+
+## 9. Storage
 
 Backends:
 
@@ -420,7 +539,7 @@ marginalia storage migrate --from local --to mirror
 
 S3 is intended for Postgres-backed deployments.
 
-## 9. Lifecycle
+## 10. Lifecycle
 
 Entry lifecycle values:
 
@@ -440,7 +559,7 @@ AUTO_LIFECYCLE_ENABLED=false
 
 This preserves personal worker intent. Shared deployments may enable background demotion/archive suggestions for cost and recall management.
 
-## 10. Invariants
+## 11. Invariants
 
 - User files and folders are user-owned. AI does not mutate them directly through agent tools.
 - AI-internal structures are not user-visible truth; they are retrieval aids.
@@ -449,11 +568,14 @@ This preserves personal worker intent. Shared deployments may enable background 
 - The snapshot is not citable evidence.
 - Citation `entry_id` values must come from current-turn tool results.
 - Original-source reads are required for source-backed claims.
+- Embedding and rerank credentials are independent from `LLM_*` profiles.
+- Optional semantic recall must degrade to lexical/metadata recall when no
+  valid semantic index or embedding key exists.
 - Task idempotence belongs in `task_outcomes`, not ad hoc audit scans.
 - Storage backend changes require migration, not just `.env` edits.
 - Long documents must be read through targeted windows.
 
-## 11. Deployment Shapes
+## 12. Deployment Shapes
 
 Embedded default:
 
@@ -475,12 +597,41 @@ CLI or desktop
 
 Docker compose starts API, worker, Postgres, and MinIO.
 
-## 12. Non-goals
+## 13. Release Pipeline
+
+Desktop and Docker releases are standard CI outputs. Desktop builds run in
+parallel, upload workflow artifacts, and a single publish job mutates the
+GitHub Release:
+
+```text
+desktop matrix
+  -> windows-x64
+  -> windows-arm64
+  -> macos-arm64
+  -> linux-x64
+  -> linux-arm64
+  -> upload workflow artifacts
+
+docker
+  -> build and push multi-arch ghcr.io image
+
+publish-release
+  -> download all desktop artifacts
+  -> verify the expected 9 assets
+  -> create/update the GitHub Release once
+  -> verify release assets
+```
+
+This avoids draft-release races from multiple matrix jobs uploading to the
+same Release while preserving parallel build time.
+
+## 14. Non-goals
 
 Current system behavior intentionally excludes:
 
 - vector DB as the primary retrieval layer;
 - opaque chunk stores as the source of truth;
+- claiming general RAG/report-generation SOTA from local validation alone;
 - automatic user-file deletion by AI;
 - using audit logs or raw conversation history as retrieval memory;
 - treating LLM-generated summaries as sufficient evidence when original text is available.

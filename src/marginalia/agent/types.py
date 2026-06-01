@@ -3,6 +3,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Literal
+
+
+ChatMode = Literal["deep", "quick"]
+
+
+@dataclass(slots=True, frozen=True)
+class RunOptions:
+    mode: ChatMode = "deep"
 
 
 @dataclass(slots=True)

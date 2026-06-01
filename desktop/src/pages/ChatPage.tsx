@@ -13,12 +13,12 @@
  *  a fresh session lazily on first send.
  */
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Send, Square, Sparkles } from "lucide-react";
+import { Send, Square, Sparkles, Zap } from "lucide-react";
 
 import { sessions } from "@/api/client";
 import { streamChat } from "@/api/chatStream";
 import type {
-  ChatEvent, ReplayedTurn, ReplayedToolCall, ThinkingEventData,
+  ChatEvent, ChatMode, ReplayedTurn, ReplayedToolCall, ThinkingEventData,
 } from "@/types/api";
 import { TurnView, type Turn, type Step } from "@/components/TurnView";
 import { SessionList } from "@/components/SessionList";
@@ -49,6 +49,7 @@ export function ChatPage() {
   const loading = useChatSession((s) => s.loading);
   const { setTurns, setStreaming, setLoading, reset } = useChatSession();
   const [input, setInput] = useState("");
+  const [chatMode, setChatMode] = useState<ChatMode>("deep");
   const [openErr, setOpenErr] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [refreshSignal, setRefreshSignal] = useState(0);
@@ -139,6 +140,7 @@ export function ChatPage() {
     try {
       await streamChat(sid, q, {
         signal: ac.signal,
+        mode: chatMode,
         onEvent: (ev) => {
           const cur = liveStreams.get(sid);
           if (!cur || cur.generation !== gen) return;
@@ -179,7 +181,7 @@ export function ChatPage() {
       }
       if (cur && cur.generation === gen && isFirstTurn) setRefreshSignal((n) => n + 1);
     }
-  }, [input, ensureSession, setTurns, setStreaming, i18n]);
+  }, [input, chatMode, ensureSession, setTurns, setStreaming, i18n]);
 
   const stop = useCallback(() => {
     const sid = useChatSession.getState().sessionId;
@@ -258,6 +260,42 @@ export function ChatPage() {
 
         <div className="border-t border-border bg-bg-subtle px-6 py-3">
           <div className="mx-auto flex max-w-5xl items-end gap-2">
+            <div
+              className="flex h-9 shrink-0 overflow-hidden rounded-md border border-border bg-bg-base p-0.5"
+              aria-label={i18n.chat.mode}
+              role="group"
+            >
+              <button
+                type="button"
+                title={i18n.chat.quickModeHint}
+                disabled={streaming}
+                onClick={() => setChatMode("quick")}
+                className={cn(
+                  "flex h-8 w-16 items-center justify-center gap-1 rounded-[4px] text-xs transition-colors",
+                  chatMode === "quick"
+                    ? "bg-accent text-accent-fg"
+                    : "text-fg-muted hover:bg-bg-muted",
+                  streaming && "cursor-not-allowed opacity-60",
+                )}
+              >
+                <Zap size={13} /> {i18n.chat.quickMode}
+              </button>
+              <button
+                type="button"
+                title={i18n.chat.deepModeHint}
+                disabled={streaming}
+                onClick={() => setChatMode("deep")}
+                className={cn(
+                  "flex h-8 w-16 items-center justify-center gap-1 rounded-[4px] text-xs transition-colors",
+                  chatMode === "deep"
+                    ? "bg-accent text-accent-fg"
+                    : "text-fg-muted hover:bg-bg-muted",
+                  streaming && "cursor-not-allowed opacity-60",
+                )}
+              >
+                <Sparkles size={13} /> {i18n.chat.deepMode}
+              </button>
+            </div>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}

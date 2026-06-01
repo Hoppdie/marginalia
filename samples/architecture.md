@@ -2,6 +2,12 @@
 
 This document is a developer-facing architecture sketch. It complements the full design in `DESIGN.md`.
 
+Marginalia's current architecture is optimized for a personal-library research
+agent rather than a pure vector database. The system can behave like hybrid
+RAG for quick lookup, but its strongest path is multi-step ReAct
+investigation: locate candidate materials, verify metadata, read original
+source windows, follow related evidence, and produce a cited report.
+
 ## 1. System Shape
 
 ```text
@@ -110,6 +116,8 @@ POST /v1/chat/{session_id}
   -> build stable snapshot
   -> plan LLM call
   -> execute LLM loop with tools
+     quick mode: up to two tool-capable passes, then forced answer
+     deep mode: configured full ReAct budget
   -> stream SSE events
   -> persist answer and metrics
   -> enqueue reflect_turn
@@ -118,6 +126,7 @@ POST /v1/chat/{session_id}
 The execute loop can call:
 
 ```text
+recall_knowledge
 search_journal
 list_folder
 list_catalogs
@@ -148,15 +157,64 @@ The journal row is what future turns search. Raw conversations are persisted for
 ## 4. Retrieval Funnel
 
 ```text
-journal recall
-  -> structured metadata filters
-  -> catalog/tag/view/folder narrowing
-  -> related entry graph
+recall_knowledge
+  -> resolve tag hints
+  -> search journal notes
+  -> search metadata by tags/text
+  -> optional semantic recall
+  -> RRF-style merge and scoring
+  -> optional rerank
+  -> quota or reranked evidence selection
+  -> one-hop related-entry expansion
+  -> batched metadata verification
   -> original source read
   -> cited answer
 ```
 
 The funnel intentionally delays expensive raw-file reads until candidates are plausible.
+`recall_knowledge` is the preferred high-level first pass for broad
+knowledge-base questions. Lower-level tools remain available for focused
+follow-up:
+
+```text
+materialize_view      expand a saved view into entry IDs
+search_metadata       direct metadata/tag/folder/view recall
+search_journal        prior-investigation memory
+read_entries_metadata inspect sections, summaries, tags, and related entries
+read_files            source-grounded evidence read
+```
+
+Views are still explicit tools rather than an implicit global filter:
+`materialize_view` reads `View.filter_spec`, while `search_metadata(view_id=...)`
+searches within a materialized view. This keeps ReAct control visible to the
+agent instead of silently changing every recall call.
+
+### Hybrid Recall Internals
+
+```text
+tag seeds
+  -> resolve_tag
+  -> search_metadata(tags_any=...)
+  -> search_journal(tags=...)
+
+text seeds
+  -> search_metadata(text=[...])
+  -> search_journal(text=[...])
+  -> semantic_entry_rows(query) when SEMANTIC_RECALL_ENABLED=true
+
+merged entries
+  -> score_recall_entries(rank sources + text overlap)
+  -> rerank_recall_entries when RERANK_ENABLED=true
+  -> select_evidence_entries(strategy=quota|rerank)
+```
+
+The semantic path is optional. Embedding credentials use `EMBEDDING_*`, never
+`LLM_*`; rerank uses `RERANK_*`, never chat or vision keys. The default
+embedding endpoint is DashScope/Bailian's OpenAI-compatible
+`text-embedding-v4`. If `sqlite-vec` is installed, the semantic index writes
+`vectors.sqlite`; otherwise it falls back to the file index. The current public
+CLI builder is eval-dataset scoped; the internal index API can index arbitrary
+entry IDs, but a whole-library semantic-index command has not been exposed yet.
 
 `read_files` provides targeted source access:
 
@@ -228,7 +286,62 @@ retention:       purge_deleted_files, prune
 dispatcher:      periodic_tick
 ```
 
-## 8. Storage
+Eval imports and semantic indexing are intentionally batchable:
+
+```text
+eval import-beir --concurrency N --resume
+  -> create normal file entries
+  -> run ingest synchronously
+  -> persist dataset manifest and qrels mapping
+
+eval build-semantic-index --concurrency N --resume
+  -> batch embedding requests
+  -> write file index
+  -> optionally write sqlite-vec index
+```
+
+## 8. Evaluation and Validation
+
+`marginalia eval` has three layers:
+
+```text
+run
+  -> candidate-pool metrics: hit@k, candidate_recall@k, nDCG, MRR
+
+answer / answer-run
+  -> bounded retrieval + bounded source reads + one final-answer LLM call
+  -> evidence hit, citation hit, optional label accuracy
+
+compare-report
+  -> one-shot RAG report
+  -> full ReAct report workflow
+  -> blind pairwise judge, with gold labels prioritized when available
+```
+
+This split matters architecturally. Marginalia is not trying to be only the
+best ranker; the product outcome is a source-grounded investigation report.
+Ranking metrics are diagnostics for the candidate pool, while answer/report
+metrics test whether the system can actually use evidence.
+
+Current local SciFact validation supports the design direction:
+
+```text
+retrieval, 300 queries, recall_knowledge + rerank top-80:
+  MRR 0.7226, hit@10 0.8800, hit@100 0.9133
+
+bounded answer-run, 300 queries, rerank top-80 + quota:
+  evidence hit 0.8667, citation hit 0.7133, label accuracy 0.8085
+
+end-to-end report comparison, 30 queries:
+  ReAct wins 26, one-shot RAG wins 2, ties 2, timeouts 1
+```
+
+These are local validation results, not a general SOTA claim. They justify
+advertising the system as strong for personal-library research reports, with
+the explicit tradeoff that ReAct uses more LLM calls and has higher latency
+than one-shot RAG.
+
+## 9. Storage
 
 Backends:
 
@@ -240,7 +353,7 @@ s3      remote object storage
 
 Startup checks whether existing `storage_key` shapes match the configured backend. If not, the operator must migrate or restore the previous backend.
 
-## 9. Deployment Choices
+## 10. Deployment Choices
 
 Personal library:
 
@@ -262,7 +375,34 @@ Postgres + S3 + API server + worker
 
 SQLite is appropriate for one writer process. Use Postgres when multiple processes or machines can write.
 
-## 10. Design Boundaries
+## 11. Release Pipeline
+
+The release workflow builds desktop artifacts in parallel, but only one job
+mutates the GitHub Release:
+
+```text
+desktop matrix
+  -> windows-x64
+  -> windows-arm64
+  -> macos-arm64
+  -> linux-x64
+  -> linux-arm64
+  -> upload workflow artifacts
+
+docker
+  -> build and push multi-arch ghcr.io image
+
+publish-release
+  -> download all desktop artifacts
+  -> verify the expected 9 assets
+  -> create/update the GitHub Release once
+  -> verify release assets
+```
+
+This avoids the draft-release race that can happen when multiple matrix jobs
+directly upload to the same Release, while preserving parallel build time.
+
+## 12. Design Boundaries
 
 Marginalia is not a vector search engine, a chat memory database, or a document summarizer that treats summaries as final evidence.
 

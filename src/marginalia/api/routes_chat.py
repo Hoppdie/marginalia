@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from marginalia.agent.runtime import run_turn
-from marginalia.agent.types import AgentTurnError
+from marginalia.agent.types import AgentTurnError, ChatMode, RunOptions
 from marginalia.db.models import Session as SessionRow
 from marginalia.db.session import get_session
 
@@ -70,6 +70,7 @@ def _lock_for(session_id: str) -> asyncio.Lock:
 
 class ChatBody(BaseModel):
     query: str
+    mode: ChatMode = "deep"
 
 
 @router.post("/chat/{session_id}")
@@ -97,6 +98,7 @@ async def post_chat(
                 async for ev in run_turn(
                     session_id=session_id,
                     user_message=user_message,
+                    options=RunOptions(mode=body.mode),
                 ):
                     yield {"event": ev.event_type, "data": ev.data}
             except AgentTurnError as exc:

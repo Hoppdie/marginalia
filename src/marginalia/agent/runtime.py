@@ -61,7 +61,7 @@ from marginalia.agent.stable_context import (
     render_phase_system_prompt,
 )
 from marginalia.agent.tools import ToolContext, all_tool_defs, get_tool
-from marginalia.agent.types import AgentEvent, AgentTurnError, TurnUsage
+from marginalia.agent.types import AgentEvent, AgentTurnError, RunOptions, TurnUsage
 from marginalia.db.models import Session as SessionRow
 from marginalia.db.session import session_scope
 from marginalia.llm import (
@@ -312,6 +312,7 @@ async def run_turn(
     *,
     session_id: str,
     user_message: str,
+    options: RunOptions | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run one user turn as an event stream.
 
@@ -320,6 +321,7 @@ async def run_turn(
     """
     if not user_message.strip():
         raise AgentTurnError("user_message is empty")
+    options = options or RunOptions()
 
     async with session_scope() as db:
         last = await session_service.latest_turn_index(db, session_id)
@@ -399,6 +401,7 @@ async def run_turn(
             session_id=session_id,
             outcome=outcome,
             resumed_history=resumed_history,
+            options=options,
         ):
             yield ev
 
@@ -431,6 +434,7 @@ async def run_turn(
                 "session_id": session_id,
                 "truncated": outcome.truncated,
                 "no_plan": no_plan_answer is not None,
+                "mode": options.mode,
             },
         )
         conv = await session_service.get_conversation(db, conversation_id)
@@ -458,6 +462,7 @@ async def run_turn(
             "duration_ms": usage.duration_ms,
             "truncated": outcome.truncated,
             "session_name": session_name,
+            "mode": options.mode,
         }),
     )
 
@@ -863,6 +868,7 @@ async def _run_execute_phase(
     outcome: _ExecuteOutcome,
     prefix_messages: list[ChatMessage] | None = None,
     resumed_history: list[ChatMessage] | None = None,
+    options: RunOptions | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Execute loop as event stream.
 
@@ -877,6 +883,8 @@ async def _run_execute_phase(
     current turn's user message, with a boundary note baked in by the
     builder.
     """
+    options = options or RunOptions()
+    quick_mode = options.mode == "quick"
     tool_defs = all_tool_defs()
     ctx = ToolContext(session_id=session_id, conversation_id=conversation_id)
     guard = _CallGuard()
@@ -894,8 +902,10 @@ async def _run_execute_phase(
     )
 
     settings = get_settings()
-    max_execute_turns = max(3, settings.agent_execute_max_turns)
-    max_final_continuations = max(0, settings.agent_final_answer_continue_turns)
+    max_execute_turns = 3 if quick_mode else max(3, settings.agent_execute_max_turns)
+    max_final_continuations = (
+        0 if quick_mode else max(0, settings.agent_final_answer_continue_turns)
+    )
     max_final_chars = max(0, settings.agent_final_answer_max_chars)
     max_total_turns = max_execute_turns + max_final_continuations
 
@@ -907,16 +917,26 @@ async def _run_execute_phase(
     for turn in range(max_total_turns):
         if turn >= max_execute_turns and not continuing_final_answer:
             break
+        force_final_answer = (
+            quick_mode
+            and not continuing_final_answer
+            and turn >= max_execute_turns - 1
+        )
 
         budget_tail = (
             None
             if continuing_final_answer
-            else _budget_tail(turn=turn, limit=max_execute_turns)
+            else _budget_tail(
+                turn=turn,
+                limit=max_execute_turns,
+                mode=options.mode,
+            )
         )
         loop_messages = messages + [
             ChatMessage(role="user", content=budget_tail)
         ] if budget_tail else messages
-        request_tools = None if continuing_final_answer else tool_defs
+        tools_disabled = continuing_final_answer or force_final_answer
+        request_tools = None if tools_disabled else tool_defs
 
         yield AgentEvent(
             event_type="thinking",
@@ -924,6 +944,8 @@ async def _run_execute_phase(
                 "round": turn + 1,
                 "limit": max_execute_turns,
                 "final_continuation": continuing_final_answer,
+                "mode": options.mode,
+                "force_final_answer": force_final_answer,
             }, ensure_ascii=False),
         )
 
@@ -933,7 +955,7 @@ async def _run_execute_phase(
             messages=loop_messages,
             max_tokens=settings.agent_execute_max_tokens,
             tools=request_tools,
-            tool_choice="none" if continuing_final_answer else "auto",
+            tool_choice="none" if tools_disabled else "auto",
             json_schema=None,
             cache_breakpoints=[0] if prefix_messages else [],
             temperature=0.3,
@@ -953,15 +975,32 @@ async def _run_execute_phase(
                 duration_ms=duration_ms,
                 extra={
                     "execute_turn": turn,
+                    "mode": options.mode,
                     "stop_reason": resp.stop_reason,
                     "final_continuation": continuing_final_answer,
                     "final_continuation_index": final_continuations
                     if continuing_final_answer else None,
+                    "tools_disabled": tools_disabled,
                 },
             )
             await db.commit()
 
-        if resp.tool_calls and not continuing_final_answer:
+        if resp.tool_calls and tools_disabled:
+            log.warning(
+                "conversation %s got tool calls while tools disabled in mode=%s",
+                conversation_id,
+                options.mode,
+            )
+            if resp.text:
+                answer = _strip_leaked_no_plan(resp.text)
+                outcome.answer = answer
+                yield AgentEvent(
+                    event_type="answer",
+                    data=await _rewrite_footnotes_for_display(answer),
+                )
+                return
+
+        if resp.tool_calls and not tools_disabled:
             assistant_blocks: list = []
             if resp.text:
                 assistant_blocks.append(TextBlock(text=resp.text))
@@ -1102,7 +1141,7 @@ async def _run_execute_phase(
     )
 
 
-def _budget_tail(*, turn: int, limit: int) -> str | None:
+def _budget_tail(*, turn: int, limit: int, mode: str = "deep") -> str | None:
     """Return the budget tail message for execute turn `turn` (0-indexed).
 
     Always show 'rounds used / left'. Once the run enters the last third of
@@ -1115,6 +1154,19 @@ def _budget_tail(*, turn: int, limit: int) -> str | None:
         f"[turn tail] tool rounds used {used} / limit {limit} "
         f"(remaining {left})."
     )
+    if mode == "quick":
+        if used + 1 >= limit:
+            return (
+                base
+                + " Quick mode final execute round: do not call tools. "
+                "Answer from the evidence already collected. If evidence is "
+                "insufficient, state the gap instead of expanding the search."
+            )
+        return (
+            base
+            + " Quick mode: use compact tool calls only for missing evidence; "
+            "the final execute round will answer without tools."
+        )
     # Nudge once we enter the last third of the budget. For limit=15 this
     # fires from turn 10 onwards (matching the original constant).
     nudge_from = (2 * limit) // 3 + 1

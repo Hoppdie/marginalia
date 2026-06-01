@@ -1,16 +1,34 @@
 # Marginalia
 
 > English: [README.md](README.md)
-> 设计文档:[DESIGN.md](DESIGN.md)
+> 设计文档: [DESIGN.md](DESIGN.md)
 
-图书馆学风格的个人知识库系统。AI 在后台编目、归类、交叉引用;你提问,
-调查员 agent 翻自己的笔记本(journal)、收集上下文,给出带引用的回答。
+Marginalia 是面向个人图书馆的本地优先研究 agent。它适合管理 PDF、笔记、
+Office 文档、图片、表格、日志、压缩包和长期积累的调查历史。AI 在后台
+编目、归类、交叉引用;你提问时,调查员 agent 会检索笔记本(journal)、召回
+候选材料、阅读原文片段,最后给出带引用的回答。
 
 ![Marginalia 桌面端界面](docs/images/desktop-gui.jpg)
 
-**不用向量库、不嵌入、不切块。** 检索靠结构化访问点(分类树 / tags /
-views)+ metadata 搜索 + agent 直接读原文。LLM 提供语义理解,schema
-负责账本。
+核心思路不是“把所有东西切块后丢进向量库”。Marginalia 先用 journal、
+文件夹、catalog、tag、view、metadata 和 `recall_knowledge` 缩小范围,再按需
+合并词法召回、可选 embedding 召回、RRF 风格打分、可选 rerank 和 evidence
+配额,最后让 agent 读取原文的章节、页码、段落、行号、压缩包成员或表格切片。
+
+## 能力定位
+
+Marginalia 可以实事求是地宣传为一个能力很强的个人图书馆研究 agent。强项
+不是单次关键词搜索,而是“找到材料 → 验证 metadata → 阅读原文 → 交叉比对证据
+→ 产出带引用报告”的完整调查链路。相比普通 top-k RAG,它可以多步迭代:
+回忆旧调查、走结构化检索、跟随相关 entry、修正搜索路径,再基于原文作答。
+
+边界也很明确:完整 ReAct 流程更慢、LLM 调用更多,不适合作为每个快速查询的
+最低成本路径。对短问题,它接近一个 hybrid RAG;对需要溯源和综合判断的研究
+报告,多步工作流才是优势所在。
+
+因此 chat 界面提供按轮选择的两种模式:**快速**会先规划,但最多允许两次紧凑
+取证,第三次 execute 强制产出最终回答;**深入**保留完整 ReAct 调查循环,适合
+更重视覆盖率而不是延迟的问题。
 
 ## 它怎么工作
 
@@ -38,9 +56,8 @@ source .venv/Scripts/activate            # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
 mkdir my-library && cd my-library
-marginalia init                          # 生成 .env / data/ / .marginalia/
+marginalia init                          # 生成 .env 和本地目录
 # 编辑 .env 填 LLM_DEFAULT_API_KEY
-alembic upgrade head
 
 marginalia
 marginalia> /upload paper.pdf /
@@ -48,7 +65,7 @@ marginalia> 比较一下 raft 和 paxos
 ```
 
 `marginalia` 命令是单进程——server / worker / CLI 全在里面,不需要开
-第二个终端。
+第二个终端。第一次启动会自动初始化数据库 schema,不需要手动跑 migration。
 
 默认你的文件以真实文件夹形式存在 `~/Marginalia/library/...` 下。可以
 在 Finder 里浏览、用 `rsync` / `git` 备份、用任何编辑器修改——库就是
@@ -61,15 +78,14 @@ marginalia> 比较一下 raft 和 paxos
 ## 桌面应用
 
 [Releases 页面](https://github.com/shenmintao/marginalia/releases) 提
-供 Windows、macOS(Apple Silicon)和 Linux 的开箱即用桌面包。每个包
-都内置了自己的 Python 运行时——无需系统 Python。
+供 Windows x64/arm64、macOS Apple Silicon、Linux x64/arm64 的桌面包。
+每个包都内置了自己的 Python 运行时——无需系统 Python。
 
-- **Windows**:`Marginalia_<version>_windows_x86_64-setup.exe`(NSIS
-  安装版)或 `Marginalia_<version>_windows_x86_64_portable.zip`(解
-  压即用绿色版)。需要预装 Microsoft Edge WebView2 Runtime(当前
-  Windows 10 / 11 已经默认带了)。
-- **macOS**:`Marginalia_<version>_aarch64.dmg`,仅支持 Apple Silicon。
-- **Linux**:`.deb` 或 `.rpm`。
+- **Windows**: `marginalia-v<version>-windows-x64-setup.exe` /
+  `marginalia-v<version>-windows-x64-portable.zip`,以及 arm64 对应包。需要
+  Microsoft Edge WebView2 Runtime(当前 Windows 10 / 11 通常已内置)。
+- **macOS**: `marginalia-v<version>-macos-arm64.dmg`,仅支持 Apple Silicon。
+- **Linux**: `marginalia-v<version>-linux-x64.deb` / `.rpm`,以及 arm64 对应包。
 
 ### 首次启动须知(未签名二进制)
 
@@ -118,7 +134,7 @@ marginalia> 比较一下 raft 和 paxos
 ```
 marginalia> 比较一下 raft 和 paxos
 ⠋ planning the investigation...
-⠋ calling search_journal(q="raft consensus")
+⠋ calling recall_knowledge(text=["raft", "paxos"])
 ⠋ calling read_files(entry_id=...)
 ⠋ investigator thinking...
 ✓ answer ready
@@ -145,11 +161,50 @@ folders / file_entries /    — 用户可见
 tasks / task_outcomes       — 基础设施
 ```
 
-**11 种任务,13 个 agent 工具,8 条 ingest pipeline**:
+**任务队列 + ReAct 工具 + 8 条 ingest pipeline**:
 
 - text / pdf(含扫描件 OCR via VLM)/ image(VLM 缩放)
 - docx / spreadsheet / log(含 logrotate 变种)
 - archive(zip / tar.* / 7z / rar / .gz / .bz2 / .xz / iso / cab,50+ 种 via py7zz)
+
+### 混合召回
+
+调查员现在优先用 `recall_knowledge` 做宽召回:
+
+```
+用户问题
+  → recall_knowledge
+      → resolve_tag
+      → search_journal
+      → search_metadata(tags/text)
+      → 可选 semantic recall
+      → RRF 风格合并打分
+      → 可选 rerank
+      → quota 或 rerank evidence selection
+  → read_entries_metadata
+  → read_files
+  → 带引用答案
+```
+
+embedding 和 rerank 都是可选能力,不会隐式复用 chat / vision / ingest 的
+API key。默认 embedding 配置面向百炼/DashScope 的 `text-embedding-v4`;
+如果安装 `sqlite-vec`,semantic index 会额外写入 `vectors.sqlite`,否则走文件
+索引 fallback。当前公开 CLI 的 semantic index 构建命令主要服务 eval 数据集;
+全库一键 semantic index 命令还没有暴露。
+
+### 评测结论
+
+最新本地 SciFact 评测支持这个方向,但不把它包装成通用 SOTA:
+
+- 300 条 retrieval,`recall_knowledge` + rerank top-80: MRR 0.7226,
+  hit@10 0.8800,hit@100 0.9133。
+- 300 条 bounded answer-run,rerank top-80 + quota: evidence hit 0.8667,
+  citation hit 0.7133,label accuracy 0.8085。
+- 30 条端到端报告对比:ReAct 赢 26 条,one-shot RAG 赢 2 条,平 2 条,
+  timeout 1 条。
+
+结论是:Marginalia 可以宣传为“个人图书馆研究报告场景很强”,尤其适合需要
+溯源、引用和多步调查的问题;但完整 ReAct 流程有更高延迟和模型调用成本。
 
 ### Discovery(减少 agent 循环次数)
 
@@ -201,6 +256,9 @@ GET  /health                           liveness probe(无版本)
 `tool_result` / `answer` / `error` / `done`。CLI 状态机就是按这些事件
 渲染的。
 
+请求体支持 `{ "query": "...", "mode": "deep" }` 或
+`{ "query": "...", "mode": "quick" }`;省略 `mode` 时默认走深入调查。
+
 ## 配置
 
 `.env`:
@@ -216,11 +274,24 @@ STORAGE_BACKEND=mirror           # 默认。文件以可读文件夹形式存:
 
 WORKER_ENABLED=true              # embedded 模式默认开
 
-LLM_DEFAULT_PROVIDER=openai      # 或 anthropic
+LLM_DEFAULT_PROVIDER=openai      # openai / openai-compatible / anthropic
 LLM_DEFAULT_API_KEY=sk-...
+LLM_DEFAULT_BASE_URL=
 LLM_DEFAULT_MODEL=gpt-4o-mini
 LLM_REFLECT_MODEL=gpt-4o
 LLM_VISION_MODEL=gpt-4o
+
+EMBEDDING_API_KEY=
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v4
+SEMANTIC_RECALL_ENABLED=false
+SEMANTIC_INDEX_BACKEND=auto      # auto / file / sqlite-vec
+
+RERANK_ENABLED=false
+RERANK_API_KEY=
+RERANK_BASE_URL=https://dashscope.aliyuncs.com/compatible-api/v1
+RERANK_MODEL=qwen3-rerank
+EVIDENCE_SELECTION=quota         # quota / rerank
 
 AGENT_PLAN_MAX_TOKENS=1024
 AGENT_EXECUTE_MAX_TOKENS=2048
@@ -288,11 +359,11 @@ Compose 在 api 启动时跑 `alembic upgrade head`,通过一次性 init
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```
 
-35 个 e2e 测试覆盖整个栈——upload / ingest / reflect / dispatcher /
-purge / normalize_tags / enrich_tags / lifecycle / restructure /
+测试覆盖 upload / ingest / reflect / dispatcher / lifecycle / restructure /
 agent runtime / agent tools / CLI / image / pdf / pdf-OCR / docx /
 spreadsheet / container / git / archive pipeline / mirror 存储 /
-scan + sync / discovery。
+scan + sync / discovery / semantic index fallback / recall-rerank scoring /
+eval 命令等路径。
 
 ## License
 

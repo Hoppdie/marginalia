@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.1 - 2026-05-31
+
+### Added
+
+- Chat UI **Quick / Deep** mode switch.
+- Request-level chat mode API: `POST /v1/chat/{session_id}` now accepts
+  `mode: "quick" | "deep"`.
+
+### Changed
+
+- Quick mode keeps the plan phase but caps execute to three LLM calls: the
+  first two may gather evidence with tools, while the third disables tools and
+  must answer from collected evidence. Deep mode keeps the existing full ReAct
+  investigation budget.
+- Documentation now describes the quick lookup path separately from the full
+  deep investigation workflow.
+
 ## 0.2.0 - 2026-05-30
 
 Marginalia 0.2.0 moves the project toward a personal-library research agent:

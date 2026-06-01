@@ -3,7 +3,9 @@
 > Chinese manual: [USAGE.zh-CN.md](USAGE.zh-CN.md)
 > Design rationale: [DESIGN.md](DESIGN.md)
 
-This manual describes how to install, configure, run, and troubleshoot Marginalia as a private heterogeneous knowledge-base retrieval system.
+This manual describes how to install, configure, run, evaluate, and
+troubleshoot Marginalia as a private heterogeneous knowledge-base retrieval
+and report-generation system.
 
 ## 1. Install
 
@@ -132,7 +134,14 @@ Ask a question:
 marginalia> compare this Raft paper with my Paxos notes
 ```
 
-The investigator will plan, search journal, search metadata, inspect candidates, read original file slices, and answer with footnotes.
+The investigator will plan, call `recall_knowledge` for broad material
+location, inspect candidate metadata, read original file slices, and answer
+with footnotes.
+
+The desktop chat composer has a per-turn **Quick / Deep** switch. Quick keeps
+the plan phase but caps execute to at most two evidence-gathering passes
+followed by a forced answer on the third execute call, which is useful for
+lookup-style questions. Deep is the default full investigation loop.
 
 Export:
 
@@ -140,7 +149,38 @@ Export:
 marginalia> /export
 ```
 
-## 6. CLI Commands
+## 6. Capability Profile
+
+Marginalia is intentionally stronger than a plain top-k RAG loop in the
+personal-library investigation case:
+
+- it keeps durable journal memory from previous investigations;
+- it searches structured metadata, tags, folders, catalogs, and views before
+  reading raw files;
+- it can add optional embedding recall and reranking without making vectors
+  the only retrieval path;
+- it follows related-entry signals and reads original source windows before
+  making cited claims;
+- it can compare the full ReAct report workflow against one-shot RAG with
+  `marginalia eval compare-report`.
+
+The current evidence supports advertising it as a strong personal-library
+research agent, especially for source-grounded reports. It should not be
+described as general SOTA across all RAG benchmarks. The validated claim is
+narrower and more useful: on local SciFact evaluation, the ReAct workflow beat
+a one-shot RAG report baseline in most sampled end-to-end comparisons, at the
+cost of higher latency and more LLM calls.
+
+Latest local validation:
+
+- SciFact 300 retrieval with `recall_knowledge` + rerank top-80: MRR 0.7226,
+  hit@10 0.8800, hit@100 0.9133.
+- SciFact 300 bounded answer-run with rerank top-80 and quota selection:
+  evidence hit 0.8667, citation hit 0.7133, label accuracy 0.8085.
+- 30-query end-to-end report comparison: ReAct won 26, one-shot RAG won 2,
+  tied 2, with 1 timeout.
+
+## 7. CLI Commands
 
 ### Files and Folders
 
@@ -179,16 +219,17 @@ queries.jsonl
 qrels/test.tsv
 ```
 
-Import runs ingest synchronously for every corpus document:
+Import runs ingest synchronously for every corpus document. Use
+`--concurrency` for large corpora and `--resume` after an interrupted import:
 
 ```bash
-MARGINALIA_HOME=./runtime/eval/scifact marginalia eval import-beir scifact ./datasets/scifact
+MARGINALIA_HOME=./runtime/eval/scifact marginalia eval import-beir scifact ./datasets/scifact --concurrency 100 --resume
 ```
 
 Build semantic recall with Bailian/DashScope `text-embedding-v4`:
 
 ```bash
-MARGINALIA_HOME=./runtime/eval/scifact EMBEDDING_API_KEY=... marginalia eval build-semantic-index scifact
+MARGINALIA_HOME=./runtime/eval/scifact EMBEDDING_API_KEY=... marginalia eval build-semantic-index scifact --concurrency 10 --resume
 ```
 
 Run retrieval metrics after import:
@@ -232,7 +273,10 @@ metadata path. Semantic recall is optional and disabled by default; enable it
 with `SEMANTIC_RECALL_ENABLED=true` after building an index. The embedding
 provider defaults to Bailian/DashScope `text-embedding-v4`; configure it with
 `EMBEDDING_API_KEY`. Embedding credentials are intentionally separate from
-`LLM_*` profiles. If `sqlite-vec` is installed through
+`LLM_*` profiles. The current public build command indexes imported eval
+datasets; a whole-library index command is not exposed yet, so only entries
+present in the default semantic index participate in semantic recall. If
+`sqlite-vec` is installed through
 `pip install -e ".[semantic]"`, the index writes `vectors.sqlite` and semantic
 search uses it before falling back to the file index. Set
 `SEMANTIC_INDEX_BACKEND=file` to avoid sqlite-vec entirely.
@@ -262,7 +306,7 @@ reranked top evidence directly.
 
 Maintenance includes tag quality, catalog restructuring, lifecycle suggestions, relation mining, relation vetting, view proposals, entry-extra refresh, and pruning.
 
-## 7. Asking Effective Questions
+## 8. Asking Effective Questions
 
 Marginalia works best for questions that need evidence from your library:
 
@@ -274,14 +318,15 @@ Group my observability notes by product risk.
 
 The agent is prompted to:
 
-1. start substantive turns with `search_journal`;
-2. for multi-keyword journal recall, try `search_journal(tags=[...])` first;
-3. fall back to `search_journal(text=...)` when tag recall is weak;
-4. read original files before making source-backed claims.
+1. use `recall_knowledge` for broad material location;
+2. preserve exact names, dates, numbers, and file-like phrases as recall terms;
+3. batch-check candidate metadata before reading raw files;
+4. use lower-level search tools for focused follow-up;
+5. read original files before making source-backed claims.
 
 PDF citations prefer exact `quote` lookup over page-only lookup, because printed page labels can differ from physical PDF pages.
 
-## 8. Read Granularity
+## 9. Read Granularity
 
 `read_files` supports:
 
@@ -293,7 +338,7 @@ PDF citations prefer exact `quote` lookup over page-only lookup, because printed
 
 Long documents are windowed. Default PDF reads do not extract an entire thousand-page document; results include continuation hints such as `next_page_start`. For long text, default reads are proportional to the requested window, while deep reads can scan more when searching by heading, section, line, or pattern.
 
-## 9. Storage Backends
+## 10. Storage Backends
 
 ### mirror
 
@@ -325,7 +370,7 @@ marginalia storage migrate --from local --to mirror
 
 Remote object storage for multi-host deployments. Use Postgres with S3; SQLite is not suitable for multiple writer processes.
 
-## 10. Lifecycle
+## 11. Lifecycle
 
 Entries can be:
 
@@ -343,7 +388,7 @@ AUTO_LIFECYCLE_ENABLED=false
 
 This is deliberate for personal libraries. Shared deployments can enable it to let background tasks demote or archive inactive material.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### Missing LLM API key
 
@@ -354,6 +399,43 @@ LLM_CHAT_API_KEY=...
 LLM_REFLECT_API_KEY=...
 LLM_INGEST_API_KEY=...
 ```
+
+### Semantic recall does nothing
+
+Semantic recall is opt-in. Build an index first, then enable it:
+
+```bash
+pip install -e ".[semantic]"
+MARGINALIA_HOME=./runtime/eval/scifact EMBEDDING_API_KEY=... marginalia eval build-semantic-index scifact
+```
+
+```ini
+SEMANTIC_RECALL_ENABLED=true
+EMBEDDING_API_KEY=...
+SEMANTIC_INDEX_BACKEND=auto
+```
+
+Embedding credentials are not inferred from `LLM_DEFAULT_API_KEY` or
+`LLM_VISION_API_KEY`. The current CLI build command is for imported eval
+datasets; if you have not built a default index containing the target entries,
+semantic recall will correctly fall back to lexical metadata recall.
+
+### Rerank is configured but not used
+
+Rerank only runs when `RERANK_ENABLED=true`, `RERANK_API_KEY` is set, and the
+recall call has text terms to score:
+
+```ini
+RERANK_ENABLED=true
+RERANK_API_KEY=...
+RERANK_MODEL=qwen3-rerank
+RERANK_TOP_N=80
+EVIDENCE_SELECTION=quota
+```
+
+Keep `EVIDENCE_SELECTION=quota` when you want diversity across overlapping,
+tag, lexical, and semantic signals. Use `EVIDENCE_SELECTION=rerank` only when
+you want the reranked order to directly decide the evidence set.
 
 ### File stuck in `processing`
 
@@ -397,7 +479,7 @@ For mirror storage:
 /ingest <path>
 ```
 
-## 12. Backup
+## 13. Backup
 
 For SQLite + mirror/local storage, stop Marginalia and copy the whole `MARGINALIA_HOME` directory.
 

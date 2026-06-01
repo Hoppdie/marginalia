@@ -231,6 +231,7 @@ export interface RecentTasks {
 }
 
 export type OnConflict = "rename" | "error" | "skip";
+export type ChatMode = "deep" | "quick";
 
 /** SSE event names emitted by POST /v1/chat/{session_id}.
  *  Order in a typical turn: conversation → planning → plan → thinking
@@ -265,6 +266,8 @@ export interface ThinkingEventData {
   round?: number;
   limit?: number;
   final_continuation?: boolean;
+  mode?: ChatMode;
+  force_final_answer?: boolean;
 }
 
 export interface ToolCallEventData {

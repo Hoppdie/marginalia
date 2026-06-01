@@ -3,26 +3,66 @@
 > Chinese README: [README.zh-CN.md](README.zh-CN.md)
 > Detailed design: [DESIGN.md](DESIGN.md)
 
+Marginalia is a local-first research agent for private heterogeneous knowledge
+bases.
+
+It is designed for people who do not want another black-box vector search layer
+over their files. Marginalia narrows the search space through journals,
+folders, catalogs, tags, views, metadata, optional semantic recall, reranking,
+and evidence-graph traversal — then reads the original file windows before
+producing cited answers and reports.
+
+For quick lookups, it behaves like hybrid RAG. For research-style questions,
+its full ReAct investigation workflow can iterate over prior memory, metadata,
+related entries, and original source slices to produce stronger source-grounded
+reports.
+
 ![Marginalia promotional hero](docs/images/marginalia-promo-en.png)
 
-Marginalia is an AI retrieval infrastructure for private heterogeneous knowledge bases. It is designed for personal or small-team libraries made of PDFs, notes, office documents, images, spreadsheets, logs, archives, and evolving investigation history.
+The retrieval funnel is deliberately structured:
 
-The core idea is not "embed everything and search vectors." Marginalia uses a structured retrieval funnel:
-
-1. narrow the search space with folders, catalogs, tags, views, metadata, and persistent investigation journals;
-2. discover neighbouring evidence through relation-mining and recommendation-style graph traversal;
-3. read the original file at the relevant section, line, page, paragraph, archive member, or table slice;
-4. answer with citations that point back to source entries and, where possible, exact quotes or PDF pages.
+1. narrow the search space with journals, folders, catalogs, tags, views,
+   metadata, and the high-level `recall_knowledge` tool;
+2. merge lexical metadata recall with optional embedding recall, then apply
+   RRF-style scoring, optional reranking, and source quotas;
+3. discover neighbouring evidence through relation-mining and
+   recommendation-style graph traversal;
+4. read the original file at the relevant section, line, page, paragraph,
+   archive member, or table slice;
+5. answer with citations that point back to source entries and, where possible, exact quotes or PDF pages.
 
 This gives the LLM a controlled way to work inside a private library: recall prior investigations, inspect candidates, verify facts against originals, and leave behind durable notes for future turns.
+
+## Capability Positioning
+
+Marginalia is strongest when the task is not a single keyword lookup, but a
+source-grounded investigation over a personal library: finding the right
+materials, reading the relevant parts, reconciling evidence, and producing a
+report with citations. In that setting, it is more capable than a plain
+"retrieve top-k chunks and answer" pipeline because the agent can iterate:
+recall prior work, inspect metadata, follow related entries, read original
+sections, and correct its search path.
+
+The tradeoff is latency and cost. The full ReAct workflow is designed as a
+deep-investigation mode, not as the cheapest path for every quick lookup. For
+short factual questions, Marginalia behaves like a hybrid RAG system; for
+research-style questions, the multi-step workflow is where the system's
+advantage shows up.
+
+The chat UI therefore exposes two per-turn modes. **Quick** still plans, but
+allows at most two compact evidence-gathering passes before forcing a final
+answer on the third execute call. **Deep** keeps the full ReAct investigation
+loop for questions where coverage matters more than latency.
 
 ## What Marginalia Provides
 
 - **Private heterogeneous library**: text, Markdown, PDFs, DOCX, images, spreadsheets, logs, and archives live in one searchable system.
 - **Structured funnel retrieval**: catalog tree, tags, views, metadata, journal recall, and targeted file reads replace ad hoc chunk retrieval.
+- **Hybrid recall when useful**: lexical FTS/BM25-style metadata recall remains the default; optional DashScope/Bailian-compatible embeddings, `sqlite-vec`, and reranking can be enabled without changing the core workflow.
 - **Persistent investigation journal**: every completed turn can write a compact `journal` entry that future planning can search.
 - **Recommendation-style evidence discovery**: background miners populate `entry_relations` from session co-occurrence, tag overlap, citation co-citation, and corpus evidence; LLM vetting filters noisy edges; query-time random walk surfaces related entries.
 - **Original-source verification**: answers cite `entry_id`, optional verbatim `quote`, optional PDF physical `page`, and a reason. PDF quote lookup can correct page offsets caused by covers or tables of contents.
+- **Measurable report quality**: `marginalia eval` imports BEIR-style datasets, evaluates retrieval pools, probes final answers, and compares one-shot RAG reports with the full ReAct investigation workflow.
 - **Local-first storage**: default mirror storage keeps files in a normal folder tree under `MARGINALIA_HOME/library`.
 
 ## Quickstart
@@ -72,8 +112,8 @@ The first launch bootstraps the database schema automatically.
 ```text
 user question
   -> plan
-  -> search_journal              # prior investigations
-  -> search_metadata/list_folder # names, summaries, tags, catalogs
+  -> recall_knowledge            # journal + metadata + optional semantic recall
+  -> search_metadata/list_folder # focused follow-up over names, summaries, tags
   -> read_entries_metadata       # sections, extra, related entries
   -> discover/related entries    # graph-based neighbours
   -> read_files                  # original text/page/line/member/table slice
@@ -81,7 +121,12 @@ user question
   -> reflect_turn                # durable journal memory
 ```
 
-The agent is instructed to start substantive questions with `search_journal`. For multi-keyword journal lookup it tries `search_journal(tags=[...])` first for OR-style tag recall, then falls back to `search_journal(text=...)` when needed.
+The agent is instructed to use `recall_knowledge` for broad material location.
+That tool resolves tag hints, searches prior journal notes and entry metadata,
+optionally adds semantic candidates, ranks the merged pool, and returns compact
+candidate IDs for batched metadata verification and source reads. Lower-level
+tools such as `search_journal`, `search_metadata`, and `materialize_view`
+remain available for focused follow-up and debugging.
 
 ## Supported Ingest Pipelines
 
@@ -124,11 +169,14 @@ intentionally want benchmark documents inside your personal library.
 default is Alibaba Cloud Model Studio / DashScope `text-embedding-v4`; set
 `EMBEDDING_API_KEY` before building. Embedding credentials are intentionally
 separate from `LLM_*` profiles. Semantic recall is optional and disabled by
-default; set `SEMANTIC_RECALL_ENABLED=true` to merge semantic candidates with
-the lexical metadata recall path. If the optional `sqlite-vec` dependency is
-installed, the semantic index also writes `vectors.sqlite` and search uses it
-before falling back to the file index. Install with `pip install -e ".[semantic]"`,
-or set `SEMANTIC_INDEX_BACKEND=file` to keep only the file backend.
+default; set `SEMANTIC_RECALL_ENABLED=true` to merge semantic candidates from
+the default semantic index with the lexical metadata recall path. The current
+CLI index builder targets imported eval datasets; a whole-library semantic
+index command is a follow-up integration point. If the optional `sqlite-vec`
+dependency is installed, the semantic index also writes `vectors.sqlite` and
+search uses it before falling back to the file index. Install with
+`pip install -e ".[semantic]"`, or set `SEMANTIC_INDEX_BACKEND=file` to keep
+only the file backend.
 Optional reranking can refine the merged candidate pool before evidence
 selection. Enable it with `RERANK_ENABLED=true`, `RERANK_API_KEY=...`, and
 optionally `RERANK_MODEL=qwen3-rerank`. Rerank credentials are also separate
@@ -149,6 +197,23 @@ SUPPORT/CONTRADICT labels, the answer report also includes label accuracy.
 RAG report and the full ReAct investigation workflow on the same query set.
 When SciFact-style gold labels are available, the judge prioritizes verdict
 correctness before report completeness.
+
+Latest local validation on SciFact 300:
+
+- Retrieval with `recall_knowledge` + rerank top-80 reached MRR 0.7226,
+  hit@10 0.8800, and hit@100 0.9133.
+- Bounded final-answer probes with rerank top-80 and quota evidence selection
+  reached evidence hit 0.8667, citation hit 0.7133, and label accuracy 0.8085.
+- A 30-query end-to-end report comparison favored the full ReAct workflow over
+  one-shot RAG in 26/30 cases, with 2 one-shot RAG wins, 2 ties, and 1 timeout.
+
+These results support Marginalia's current positioning: for quick lookups it
+behaves like a hybrid RAG system, while the full ReAct workflow is a slower
+deep-investigation path that can produce better source-grounded reports.
+They should not be read as a claim of general benchmark SOTA: the dataset is
+small, the comparison target is a local one-shot RAG baseline, and final
+quality still depends on model behavior, ingest quality, and available
+evidence.
 
 ## CLI Surface
 
@@ -192,6 +257,10 @@ GET  /health
 
 The desktop GUI and CLI both use the same API.
 
+`POST /v1/chat/{session_id}` accepts `{ "query": "...", "mode": "deep" }`
+or `{ "query": "...", "mode": "quick" }`. Omit `mode` for the default deep
+investigation behavior.
+
 ## Configuration
 
 Core `.env` fields:
@@ -212,6 +281,18 @@ LLM_CHAT_MODEL=
 LLM_REFLECT_MODEL=
 LLM_INGEST_MODEL=
 LLM_VISION_MODEL=
+
+EMBEDDING_API_KEY=
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v4
+SEMANTIC_RECALL_ENABLED=false
+SEMANTIC_INDEX_BACKEND=auto        # auto, file, sqlite-vec
+
+RERANK_ENABLED=false
+RERANK_API_KEY=
+RERANK_BASE_URL=https://dashscope.aliyuncs.com/compatible-api/v1
+RERANK_MODEL=qwen3-rerank
+EVIDENCE_SELECTION=quota           # quota or rerank
 
 AGENT_PLAN_MAX_TOKENS=1024
 AGENT_EXECUTE_MAX_TOKENS=2048
@@ -269,7 +350,7 @@ docker compose up -d
 .\.venv\Scripts\python -B -m pytest tests -q
 ```
 
-Current tests cover upload, ingest, agent runtime, tool execution, export, task scheduling, PDF/DOCX/image/table/archive pipelines, relation discovery, lifecycle behavior, and CLI flows.
+Current tests cover upload, ingest, agent runtime, tool execution, export, task scheduling, PDF/DOCX/image/table/archive pipelines, relation discovery, lifecycle behavior, semantic index fallback, recall/rerank scoring, evaluation commands, and CLI flows.
 
 ## Community links
 This open-source project is linked with and recognized by the LINUX DO community:
