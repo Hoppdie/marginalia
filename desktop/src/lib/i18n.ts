@@ -259,6 +259,9 @@ const en = {
     executeTurnBudget: "Agent execute turn budget",
     executeTurnBudgetHint:
       "Max tool-using rounds per question. Higher = deeper investigations at the cost of more LLM calls. The agent gets a wrap-up nudge when the last 1/3 of the budget is reached.",
+    readCompression: "Read result compression",
+    readCompressionHint:
+      "Trim large read_files results before they enter the chat model. Omitted ranges keep page/line/offset anchors and can be reopened exactly.",
     concurrentIngest: "Concurrent ingest tasks",
     concurrentIngestHint:
       "Maximum background tasks the worker runs at once. Lower this when ingesting large scanned PDFs.",
@@ -287,6 +290,7 @@ const en = {
       conflict: "Default conflict policy",
       tokenBudget: "Agent token budget (plan/exec)",
       executeTurns: "Agent execute turns",
+      readCompression: "Read result compression",
       ingestConcurrency: "Ingest LLM concurrency",
       vision: "Vision profile",
     },
@@ -560,6 +564,8 @@ const zh: I18nStrings = {
     executeTurnBudgetHint: "每个问题最多使用工具的轮数。更高表示调查更深，但 LLM 调用更多；进入最后 1/3 预算时 agent 会收到收尾提示。",
     concurrentIngest: "并发 ingest 任务",
     concurrentIngestHint: "后台 worker 同时运行的最大任务数。处理大型扫描 PDF 时可调低。",
+    readCompression: "阅读结果压缩",
+    readCompressionHint: "在 read_files 长结果进入聊天模型前裁剪上下文。省略范围会保留页码/行号/offset 锚点，可精确重开。",
     ingestLlmConcurrency: "Ingest LLM 并发",
     ingestLlmConcurrencyHint: "长文本/PDF 分块和扫描 PDF OCR 页面的并行 LLM 调用数。遇到服务商限流时可调低。",
     statusRefresh: "状态栏刷新",
@@ -584,6 +590,7 @@ const zh: I18nStrings = {
       conflict: "默认冲突策略",
       tokenBudget: "Agent token 预算（plan/exec）",
       executeTurns: "Agent execute 轮数",
+      readCompression: "阅读结果压缩",
       ingestConcurrency: "Ingest LLM 并发",
       vision: "Vision profile",
     },

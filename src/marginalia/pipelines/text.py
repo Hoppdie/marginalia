@@ -1,6 +1,7 @@
 """Text pipeline (DESIGN.md §11.3, first batch).
 
-Handles `text/markdown`, `text/plain`, and the `.txt` / `.md` / `.rst` extensions.
+Handles `text/markdown`, `text/plain`, and common text-shaped extensions
+including notes, code, JSON/YAML/TOML/XML, HTML, and CSV/TSV.
 Produces `description.sections` with heading-path / line-range anchors.
 
 Single LLM call:
@@ -154,7 +155,15 @@ def _response_diag(resp: Any) -> str:
 @register_pipeline(
     mimes=("text/plain", "text/markdown", "text/x-rst"),
     mime_prefixes=("text/",),
-    exts=(".txt", ".md", ".markdown", ".rst"),
+    exts=(
+        ".txt", ".md", ".markdown", ".rst",
+        ".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml",
+        ".html", ".htm", ".csv", ".tsv",
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java",
+        ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php",
+        ".swift", ".kt", ".kts", ".scala", ".sh", ".bash", ".zsh",
+        ".ps1", ".bat", ".cmd", ".sql",
+    ),
 )
 class TextPipeline(Pipeline):
     name = "text"

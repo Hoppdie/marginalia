@@ -39,7 +39,12 @@ from typing import Any, Mapping
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marginalia.agent.read_compression import (
+    CompressionSettings,
+    compress_read_text,
+)
 from marginalia.agent.tools import ToolContext, tool
+from marginalia.config import get_settings
 from marginalia.db.models import File, FileEntry
 from marginalia.pipelines.base import Pipeline, SegmentResult
 from marginalia.pipelines.registry import resolve_pipeline
@@ -84,6 +89,14 @@ SCHEMA: dict[str, Any] = {
                                     "type": "integer",
                                     "minimum": 1,
                                     "maximum": 16000,
+                                },
+                                "compress": {
+                                    "type": "boolean",
+                                    "description": (
+                                        "Set false to reopen an omitted "
+                                        "compressed region exactly, without "
+                                        "read_files result compression."
+                                    ),
                                 },
                                 # text-shaped
                                 "line_start": {"type": "integer", "minimum": 1},
@@ -221,6 +234,13 @@ async def read_files(
     }
 
     storage = get_storage()
+    settings = get_settings()
+    compression_settings = CompressionSettings(
+        enabled=settings.read_compression_enabled,
+        min_chars=settings.read_compression_min_chars,
+        target_chars=settings.read_compression_target_chars,
+        context_chars=settings.read_compression_context_chars,
+    )
     results: list[dict[str, Any]] = list(early_results)
 
     for req, eid in resolved:
@@ -294,8 +314,23 @@ async def read_files(
                 entry_dict["error"] = seg.error
                 any_failed = True
             else:
-                entry_dict["text"] = seg.text
-            if seg.extras:
+                extras = dict(seg.extras or {})
+                compression = compress_read_text(
+                    seg.text,
+                    entry_id=eid,
+                    args=dict(read_args),
+                    extras=extras,
+                    pipeline=pipeline.name,
+                    kind=file_row.kind,
+                    query=ctx.user_message,
+                    settings=compression_settings,
+                )
+                entry_dict["text"] = compression.text
+                if compression.compressed:
+                    extras["read_compression"] = compression.metadata()
+                if extras:
+                    entry_dict["extras"] = extras
+            if seg.extras and "extras" not in entry_dict:
                 entry_dict["extras"] = seg.extras
             result_obj["reads"].append(entry_dict)
         if any_failed:

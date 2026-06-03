@@ -65,12 +65,25 @@ async def _seed():
         "# Pipeline\n\nDetails of the pipeline.\n\n"
         "# Closing\n\nFinal remarks about consensus.\n"
     ).encode("utf-8")
+    long_body = "\n".join(
+        (
+            f"Long line {idx}: background material for read_files result "
+            "compression. The content is intentionally repetitive and low "
+            "signal so the first pass can omit middle ranges safely."
+        )
+        for idx in range(1, 360)
+    ).encode("utf-8")
 
     async def _stream():
         yield body
 
+    async def _long_stream():
+        yield long_body
+
     storage_key = "00/aa/test-paper"
     await storage.put(storage_key, _stream(), content_type="text/markdown")
+    long_storage_key = "00/aa/long-paper"
+    await storage.put(long_storage_key, _long_stream(), content_type="text/markdown")
 
     async with factory() as s:
         # folders
@@ -126,6 +139,24 @@ async def _seed():
                        created_at=now, updated_at=now)
         s.add(f_paper)
         await s.flush()
+        f_long = File(id=new_id(), storage_key=long_storage_key,
+                      sha256="y" * 64, size_bytes=len(long_body),
+                      mime_type="text/markdown", original_ext=".md", kind="text",
+                      summary="Long synthetic paper",
+                      description={
+                          "sections": [],
+                          "coverage": {
+                              "unit": "bytes",
+                              "total_bytes": len(long_body),
+                              "indexed_bytes": len(long_body),
+                              "indexed_partial": False,
+                          },
+                      },
+                      extra=None,
+                      ingest_status="done", ingested_at=now,
+                      created_at=now, updated_at=now)
+        s.add(f_long)
+        await s.flush()
 
         e_a = FileEntry(id=new_id(), folder_id=f_root.id, file_id=f_paper.id,
                         display_name="paper-a.md", lifecycle="active",
@@ -140,7 +171,12 @@ async def _seed():
                                lifecycle="archived",
                                catalog_id=c_llm.id, extra=None,
                                created_at=now, updated_at=now)
-        s.add_all([e_a, e_b, e_archived])
+        e_long = FileEntry(id=new_id(), folder_id=f_root.id, file_id=f_long.id,
+                           display_name="long-paper.md",
+                           lifecycle="active",
+                           catalog_id=None, extra=None,
+                           created_at=now, updated_at=now)
+        s.add_all([e_a, e_b, e_archived, e_long])
         await s.flush()
 
         # tags + alias
@@ -239,6 +275,7 @@ async def _seed():
             "folder_root": f_root.id,
             "c_research": c_research.id, "c_llm": c_llm.id, "c_db": c_db.id,
             "e_a": e_a.id, "e_b": e_b.id, "e_archived": e_archived.id,
+            "e_long": e_long.id,
             "t_consensus": t_consensus.id, "t_raft": t_raft.id,
             "t_distconsensus": t_distconsensus.id,
             "view_id": v.id,
@@ -471,6 +508,32 @@ async def main():
     assert pattern_read["ok"] is True
     assert pattern_read["extras"]["match_count"] >= 1, pattern_read
     print("[7] pattern match_count:", pattern_read["extras"]["match_count"])
+
+    rf_compressed = await _call("read_files", {
+        "requests": [{
+            "entry_id": seeded["e_long"],
+            "reads": [{"offset": 0, "max_chars": 16000}],
+        }],
+    })
+    compressed_read = rf_compressed["results"][0]["reads"][0]
+    assert compressed_read["ok"] is True, compressed_read
+    compression_meta = compressed_read["extras"]["read_compression"]
+    assert compression_meta["compressed"] is True, compression_meta
+    assert compression_meta["omitted"], compression_meta
+    assert "omitted chars" in compressed_read["text"], compressed_read["text"][:500]
+    assert len(compressed_read["text"]) < compression_meta["original_chars"]
+
+    rf_uncompressed = await _call("read_files", {
+        "requests": [{
+            "entry_id": seeded["e_long"],
+            "reads": [{"offset": 0, "max_chars": 16000, "compress": False}],
+        }],
+    })
+    uncompressed_read = rf_uncompressed["results"][0]["reads"][0]
+    assert uncompressed_read["ok"] is True, uncompressed_read
+    assert "read_compression" not in uncompressed_read.get("extras", {})
+    assert len(uncompressed_read["text"]) > len(compressed_read["text"])
+    print("[7a] read_files long result compression OK")
 
     rf_patterns = await _call("read_files", {
         "requests": [{

@@ -38,6 +38,10 @@ interface ServerCtx {
       | "llm_ingest_concurrency",
     v: number,
   ) => Promise<void>;
+  setServerBoolean: (
+    field: "read_compression_enabled",
+    v: boolean,
+  ) => Promise<void>;
 }
 
 export function SettingsPage() {
@@ -113,7 +117,29 @@ function useServerCtx(): ServerCtx {
     }
   };
 
-  return { server, llm, err, setLlm, setDefaultConflict, setServerNumber };
+  const setServerBoolean = async (
+    field: "read_compression_enabled",
+    v: boolean,
+  ) => {
+    if (!server || server[field] === v) return;
+    const prev = server;
+    setServer({ ...server, [field]: v });
+    try {
+      await settingsApi.updateLlm({ [field]: v });
+    } catch {
+      setServer(prev);
+    }
+  };
+
+  return {
+    server,
+    llm,
+    err,
+    setLlm,
+    setDefaultConflict,
+    setServerNumber,
+    setServerBoolean,
+  };
 }
 
 // ---- Connection ------------------------------------------------------------
@@ -172,7 +198,12 @@ function PreferencesSection({ ctx }: { ctx: ServerCtx }) {
   const { mode, setMode } = useTheme();
   const prefs = usePrefs();
   const { t, language, setLanguage } = useI18n();
-  const { server, setDefaultConflict, setServerNumber } = ctx;
+  const {
+    server,
+    setDefaultConflict,
+    setServerNumber,
+    setServerBoolean,
+  } = ctx;
 
   return (
     <Section title={t.settings.preferencesTitle} subtitle={t.settings.preferencesSubtitle}>
@@ -266,6 +297,19 @@ function PreferencesSection({ ctx }: { ctx: ServerCtx }) {
             step={1}
             className="w-16"
             onCommit={(v) => setServerNumber("agent_execute_max_turns", v)}
+          />
+        </Row>
+
+        <Row
+          label={t.settings.readCompression}
+          hint={t.settings.readCompressionHint}
+        >
+          <input
+            type="checkbox"
+            checked={Boolean(server?.read_compression_enabled)}
+            disabled={!server}
+            onChange={(e) => setServerBoolean("read_compression_enabled", e.target.checked)}
+            className="h-4 w-4 accent-accent disabled:opacity-50"
           />
         </Row>
 
@@ -370,6 +414,10 @@ function ServerSection({ ctx }: { ctx: ServerCtx }) {
             v={`${server.agent_plan_max_tokens.toLocaleString()} / ${server.agent_execute_max_tokens.toLocaleString()}`}
           />
           <Kv k={t.settings.kv.executeTurns} v={String(server.agent_execute_max_turns)} />
+          <Kv
+            k={t.settings.kv.readCompression}
+            v={server.read_compression_enabled ? t.common.enabled : t.common.disabled}
+          />
           <Kv k={t.settings.kv.ingestConcurrency} v={String(server.llm_ingest_concurrency)} />
           <Kv
             k={t.settings.kv.vision}

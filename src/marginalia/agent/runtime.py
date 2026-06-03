@@ -886,7 +886,11 @@ async def _run_execute_phase(
     options = options or RunOptions()
     quick_mode = options.mode == "quick"
     tool_defs = all_tool_defs()
-    ctx = ToolContext(session_id=session_id, conversation_id=conversation_id)
+    ctx = ToolContext(
+        session_id=session_id,
+        conversation_id=conversation_id,
+        user_message=user_message,
+    )
     guard = _CallGuard()
 
     messages: list[ChatMessage] = (

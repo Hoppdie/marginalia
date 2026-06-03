@@ -1,12 +1,23 @@
 # Changelog
 
-## 0.2.1 - 2026-05-31
+## 0.2.1 - 2026-06-03
 
 ### Added
 
 - Chat UI **Quick / Deep** mode switch.
 - Request-level chat mode API: `POST /v1/chat/{session_id}` now accepts
   `mode: "quick" | "deep"`.
+- Deterministic, non-LLM `read_files` result compression for long Agent reads.
+  Large text, PDF text, JSON, log, and code-like results can now be trimmed
+  before entering the chat model while preserving page/line/offset reopen
+  anchors.
+- `read_files` now accepts `compress: false` for exact reopen reads of omitted
+  ranges.
+- Runtime settings for read result compression, including a Settings-page
+  toggle and `.env` defaults via `READ_COMPRESSION_*`.
+- Broader text-pipeline routing for common code/config/data extensions such as
+  `.json`, `.yaml`, `.toml`, `.xml`, `.html`, `.csv`, `.py`, `.js`, `.ts`,
+  `.go`, `.rs`, `.java`, `.sql`, and shell scripts.
 
 ### Changed
 
@@ -16,6 +27,15 @@
   investigation budget.
 - Documentation now describes the quick lookup path separately from the full
   deep investigation workflow.
+- Agent instructions now treat compressed `read_files` output as lossy:
+  visible text remains quoteable, but omitted markers must be reopened before
+  quoting or relying on omitted evidence.
+
+### Validation
+
+- Added unit coverage for PDF page, text, JSON, log, and code read compression.
+- Added `read_files` e2e coverage for compressed reads and `compress: false`
+  reopen behavior.
 
 ## 0.2.0 - 2026-05-30
 

@@ -386,7 +386,7 @@ export const settings = {
   llm: () => _request<LlmSettings>(`/v1/settings/llm`),
   /** Patch the LLM overlay. Pass `null` for a field to clear that
    *  override and fall back to the .env / default. */
-  updateLlm: (patch: Record<string, string | number | null>) =>
+  updateLlm: (patch: Record<string, string | number | boolean | null>) =>
     _request<LlmSettings>(`/v1/settings/llm`, {
       method: "PUT",
       body: JSON.stringify({ patch, replace: false }),

@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     agent_execute_max_turns: int = 15
     agent_final_answer_continue_turns: int = 3
     agent_final_answer_max_chars: int = 120_000
+    read_compression_enabled: bool = True
+    read_compression_min_chars: int = 12_000
+    read_compression_target_chars: int = 8_000
+    read_compression_context_chars: int = 220
 
     # Bounded fan-out for ingest-time LLM work: long text/PDF chunk
     # indexing and scanned-PDF OCR page calls. Keep this conservative;

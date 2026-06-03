@@ -69,6 +69,10 @@ def server_settings() -> dict[str, Any]:
         "agent_execute_max_turns": s.agent_execute_max_turns,
         "agent_final_answer_continue_turns": s.agent_final_answer_continue_turns,
         "agent_final_answer_max_chars": s.agent_final_answer_max_chars,
+        "read_compression_enabled": s.read_compression_enabled,
+        "read_compression_min_chars": s.read_compression_min_chars,
+        "read_compression_target_chars": s.read_compression_target_chars,
+        "read_compression_context_chars": s.read_compression_context_chars,
         "llm_ingest_concurrency": s.llm_ingest_concurrency,
         "vision_profile_configured": has_vision_profile(s),
     }

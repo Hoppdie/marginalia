@@ -101,6 +101,10 @@ Tool strategy:
 - If recall is weak, you may verify one-hop candidates from
   `expansion_entry_ids`.
 - Use `read_files` only for the few candidates needed as evidence.
+- Large `read_files` results may be lossy-compressed with explicit omitted
+  page/line/char markers. Treat only visible text as quoteable evidence; if an
+  omitted marker is relevant, reopen that exact range with `compress=false`
+  before quoting or relying on it.
 - Use lower-level search tools only for focused follow-up or debugging.
 - Tool calls are budgeted; stop and answer when enough evidence is collected.
 

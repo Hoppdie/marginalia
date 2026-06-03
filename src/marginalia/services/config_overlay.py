@@ -37,6 +37,10 @@ _ALLOWED_FIELDS: frozenset[str] = frozenset({
     "agent_execute_max_turns",
     "agent_final_answer_continue_turns",
     "agent_final_answer_max_chars",
+    "read_compression_enabled",
+    "read_compression_min_chars",
+    "read_compression_target_chars",
+    "read_compression_context_chars",
     "llm_ingest_concurrency",
     "worker_batch_size",
     # LLM defaults
@@ -134,6 +138,9 @@ def validate_and_normalize(patch: dict[str, Any]) -> dict[str, Any]:
             "agent_execute_max_turns",
             "agent_final_answer_continue_turns",
             "agent_final_answer_max_chars",
+            "read_compression_min_chars",
+            "read_compression_target_chars",
+            "read_compression_context_chars",
             "llm_ingest_concurrency",
             "worker_batch_size",
         ):
@@ -152,6 +159,11 @@ def validate_and_normalize(patch: dict[str, Any]) -> dict[str, Any]:
             if v < lower or v > upper:
                 bad.append(f"{k}: out of range [{lower}, {upper}]")
                 continue
+        if k == "read_compression_enabled":
+            if isinstance(v, str):
+                v = v.strip().lower() in {"1", "true", "yes", "on"}
+            else:
+                v = bool(v)
         out[k] = v
     if bad:
         raise OverlayValidationError("; ".join(bad))

@@ -320,6 +320,10 @@ export interface ServerSettings {
   agent_execute_max_turns: number;
   agent_final_answer_continue_turns: number;
   agent_final_answer_max_chars: number;
+  read_compression_enabled: boolean;
+  read_compression_min_chars: number;
+  read_compression_target_chars: number;
+  read_compression_context_chars: number;
   llm_ingest_concurrency: number;
   vision_profile_configured: boolean;
 }
@@ -337,7 +341,7 @@ export interface LlmProfileResolved {
 
 export interface LlmSettings {
   profiles: Record<LlmProfileName, LlmProfileResolved>;
-  overlay: Record<string, string | number | null>;
+  overlay: Record<string, string | number | boolean | null>;
   defaults: {
     provider: string;
     model: string;

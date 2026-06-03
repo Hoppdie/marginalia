@@ -26,6 +26,7 @@ from marginalia.llm import ToolDef
 class ToolContext:
     session_id: str
     conversation_id: str
+    user_message: str = ""
 
 
 ToolHandler = Callable[
