@@ -12,9 +12,9 @@ from dataclasses import dataclass
 
 
 CITATION_FOOTNOTE_RE = re.compile(
-    r"^\[\^([^\]\n]+)\]:\s*entry_id\s*=\s*`?"
-    r"([0-9a-fA-F][0-9a-fA-F\-]{6,35})`?"
-    r"(?P<rest>[^\n]*)$",
+    r"^\[\^([^\]\n]+)\]:\s*"
+    r"(?P<body>(?=[^\n]*\bentry_id\s*=\s*(?:`|\"|')?"
+    r"[0-9a-fA-F][0-9a-fA-F\-]{6,35}(?:`|\"|')?)[^\n]*)$",
     re.MULTILINE,
 )
 
@@ -29,6 +29,9 @@ _FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 _PAGE_RE = re.compile(r"^\s*`?\s*([0-9]+(?:-[0-9]+)?)")
+_ENTRY_ID_RE = re.compile(
+    r"^\s*([0-9a-fA-F][0-9a-fA-F\-]{6,35})\s*$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,13 +56,16 @@ def iter_citation_footnotes(text: str) -> list[CitationFootnote]:
 
 def parse_citation_footnote_match(match: re.Match[str]) -> CitationFootnote:
     """Parse one `CITATION_FOOTNOTE_RE` match into structured fields."""
-    rest, trailer_reason = _split_reason_trailer(match.group("rest") or "")
-    fields = _parse_fields(rest)
+    body, trailer_reason = _split_reason_trailer(match.group("body") or "")
+    fields = _parse_fields(body)
+    entry_id = _extract_entry_id(fields.get("entry_id"))
+    if entry_id is None:
+        entry_id = _extract_entry_id_from_body(body) or ""
     page = _extract_page(fields.get("page"))
     reason = _clean_value(trailer_reason or fields.get("reason") or "")
     return CitationFootnote(
         marker=match.group(1),
-        entry_id=match.group(2).strip(),
+        entry_id=entry_id,
         quote=_none_if_empty(fields.get("quote")),
         page=page,
         section_id=_none_if_empty(fields.get("section_id")),
@@ -103,6 +109,23 @@ def _extract_page(value: str | None) -> str | None:
     if not value:
         return None
     match = _PAGE_RE.match(value)
+    return match.group(1) if match else None
+
+
+def _extract_entry_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = _ENTRY_ID_RE.match(_clean_value(value))
+    return match.group(1) if match else None
+
+
+def _extract_entry_id_from_body(body: str) -> str | None:
+    match = re.search(
+        r"\bentry_id\s*=\s*(?:`|\"|')?"
+        r"([0-9a-fA-F][0-9a-fA-F\-]{6,35})(?:`|\"|')?",
+        body,
+        re.IGNORECASE,
+    )
     return match.group(1) if match else None
 
 

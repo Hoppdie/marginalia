@@ -178,9 +178,12 @@ async def main():
         "page=54 - page doc\n"
         "[^e]: entry_id=019e5493-fca4-7524-b8d0-3c36885b1245, "
         "quote=\"no page quote\", page=N/A - no page placeholder\n"
+        "[^f]: quote=\"quoted id\", "
+        "entry_id=\"019e5493-fca4-7524-b8d0-3c36885b1246\", "
+        "reason=\"id field quoted\"\n"
     )
     cites = parse_citations(sample)
-    assert len(cites) == 5
+    assert len(cites) == 6
     assert cites[0].marker == "a"
     assert cites[0].section_id == "s2"
     assert cites[0].reason and "election" in cites[0].reason
@@ -193,6 +196,9 @@ async def main():
     assert cites[4].quote == "no page quote"
     assert cites[4].page is None
     assert cites[4].reason == "no page placeholder"
+    assert cites[5].entry_id == "019e5493-fca4-7524-b8d0-3c36885b1246"
+    assert cites[5].quote == "quoted id"
+    assert cites[5].reason == "id field quoted"
     tolerant_variants = (
         "[^x]: entry_id=019e5493-fca4-7524-b8d0-3c36885b1245，page=7 - bad\n"
         "[^y]: entry_id=019e5493-fca4-7524-b8d0-3c36885b1246, "

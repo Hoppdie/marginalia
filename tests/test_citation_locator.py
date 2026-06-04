@@ -69,6 +69,12 @@ def _check_regex():
             f"[^d]: entry_id=`{eid}`, page=`12` - r",
             ("d", eid, None, "12", None, "r"),
         ),
+        # quoted entry_id values are tolerated; some OpenAI-compatible
+        # models serialize every field as key="value".
+        (
+            f'[^dq]: entry_id="{eid}", quote="abc", reason="quoted id"',
+            ("dq", eid, "abc", None, None, "quoted id"),
+        ),
         # short hex prefix
         (
             '[^e]: entry_id=019e63b9, quote="第三条" - r',
@@ -146,6 +152,10 @@ def _check_regex():
         (
             f'[^r]: entry_id={eid}, reason="ordered", page=9, quote="abc"',
             ("r", eid, "abc", "9", None, "ordered"),
+        ),
+        (
+            f'[^s]: quote="abc", page=9, entry_id="{eid}", reason="id later"',
+            ("s", eid, "abc", "9", None, "id later"),
         ),
         # full-width comma as field separator (LLM occasionally writes 中文 comma).
         (
@@ -265,6 +275,15 @@ async def _check_rewrite():
         assert "extra params" in out, out
         for raw in ("entry_id=", "quote=", "reason=", "confidence=", "source="):
             assert raw not in out, out
+
+        # 4d. Quoted entry_id values must also normalize; otherwise Markdown
+        # renders the raw fields into the visible footnote list.
+        out = await rt._rewrite_footnotes_for_display(
+            f'body[^a]\n\n[^a]: entry_id="{eid}", quote="abc", reason="quoted id"',
+        )
+        assert f"[my-doc.md](entry:{eid}?q=abc)" in out, out
+        assert "quoted id" in out, out
+        assert "entry_id=" not in out and "reason=" not in out, out
 
         # 4. legacy lines= → no query string (link opens file without jump)
         set_file(mime_type="text/markdown", original_ext="md", kind="text")
