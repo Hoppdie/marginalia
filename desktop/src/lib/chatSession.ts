@@ -14,14 +14,17 @@
  */
 import { create } from "zustand";
 import type { Turn } from "@/components/TurnView";
+import type { ChatMode } from "@/types/api";
 
 interface ChatSessionState {
   sessionId: string | null;
   turns: Turn[];
+  chatMode: ChatMode;
   streaming: boolean;
   loading: boolean;
   setSessionId: (id: string | null) => void;
   setTurns: (updater: Turn[] | ((prev: Turn[]) => Turn[])) => void;
+  setChatMode: (mode: ChatMode) => void;
   setStreaming: (v: boolean) => void;
   setLoading: (v: boolean) => void;
   reset: () => void;
@@ -30,6 +33,7 @@ interface ChatSessionState {
 export const useChatSession = create<ChatSessionState>((set) => ({
   sessionId: null,
   turns: [],
+  chatMode: "deep",
   streaming: false,
   loading: false,
   setSessionId: (id) => set({ sessionId: id }),
@@ -37,8 +41,15 @@ export const useChatSession = create<ChatSessionState>((set) => ({
     set((state) => ({
       turns: typeof updater === "function" ? updater(state.turns) : updater,
     })),
+  setChatMode: (mode) => set({ chatMode: mode }),
   setStreaming: (v) => set({ streaming: v }),
   setLoading: (v) => set({ loading: v }),
   reset: () =>
-    set({ sessionId: null, turns: [], streaming: false, loading: false }),
+    set({
+      sessionId: null,
+      turns: [],
+      chatMode: "deep",
+      streaming: false,
+      loading: false,
+    }),
 }));

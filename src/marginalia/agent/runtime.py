@@ -132,7 +132,9 @@ DOOM_LOOP_NUDGE = (
 FINAL_ANSWER_CONTINUE_NUDGE = (
     "[runtime guard] Your previous final answer was cut off by the token "
     "limit. Continue exactly where it stopped. Do not restart, do not repeat "
-    "previous text, do not call tools, and finish the answer."
+    "previous text, do not call tools, and finish the answer in the same "
+    "language as the user's latest message unless they explicitly asked "
+    "otherwise."
 )
 QUICK_FORCED_ANSWER_NUDGE = (
     "[runtime guard] Your previous response attempted a tool call, but Quick "
@@ -140,7 +142,8 @@ QUICK_FORCED_ANSWER_NUDGE = (
     "Do not call tools. Do not emit DSML, XML, JSON, or pseudo function-call "
     "markup. Write the final answer now from the evidence already collected. "
     "If evidence is incomplete, state the missing piece and give the best "
-    "bounded answer."
+    "bounded answer. Use the same language as the user's latest message unless "
+    "they explicitly asked otherwise."
 )
 
 
@@ -380,6 +383,7 @@ async def run_turn(
         prefix_messages=snapshot_messages,
         user_message=user_message,
         conversation_id=conversation_id,
+        mode=options.mode,
     )
     session_name = _extract_session_name(plan_text)
     if session_name:
@@ -590,6 +594,32 @@ def _prefers_zh(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in text or "")
 
 
+def _empty_answer_fallback(user_message: str) -> str:
+    return "（没有生成答案）" if _prefers_zh(user_message) else "(no answer)"
+
+
+def _tool_disabled_fallback(user_message: str) -> str:
+    if _prefers_zh(user_message):
+        return (
+            "模型在工具已禁用后仍尝试调用工具，因此这轮没有生成可靠答案。"
+            "请切换到深度模式，或缩小问题范围后重试。"
+        )
+    return (
+        "The model attempted to call a tool after tool use was disabled, so "
+        "no reliable final answer was produced. Try Deep mode or narrow the "
+        "question."
+    )
+
+
+def _turn_budget_fallback(user_message: str) -> str:
+    if _prefers_zh(user_message):
+        return "这次调查在生成完整答案前已达到轮次预算。请缩小问题范围，或换一个角度重试。"
+    return (
+        "This investigation exceeded the turn budget before a complete answer "
+        "was produced. Please narrow the question or try another angle."
+    )
+
+
 def _joined_final_answer(parts: list[str], fallback: str = "(no answer)") -> str:
     """Join final-answer fragments from max_tokens continuation calls."""
     text = "".join(p for p in parts if p)
@@ -608,6 +638,7 @@ async def _run_plan_phase(
     system_prompt: str,
     user_message: str,
     conversation_id: str,
+    mode: str = "deep",
     prefix_messages: list[ChatMessage] | None = None,
 ) -> str:
     started = time.monotonic()
@@ -637,7 +668,7 @@ async def _run_plan_phase(
             cache_read_tokens=resp.usage.cache_read_tokens,
             cache_creation_tokens=resp.usage.cache_creation_tokens,
             duration_ms=duration_ms,
-            extra={"plan_text": stored_plan_text},
+            extra={"plan_text": stored_plan_text, "mode": mode},
         )
         await db.commit()
     return plan_text
@@ -1039,17 +1070,7 @@ async def _run_execute_phase(
                 ))
                 continue
             outcome.truncated = True
-            if options.mode == "quick" and _prefers_zh(user_message):
-                answer = (
-                    "快速模式已达到工具轮次上限，但模型仍尝试继续调用工具，"
-                    "因此这轮没有生成可靠答案。请切换到深度模式，或缩小问题范围后重试。"
-                )
-            else:
-                answer = (
-                    "The model attempted to call a tool after tool use was "
-                    "disabled, so no reliable final answer was produced. "
-                    "Try Deep mode or narrow the question."
-                )
+            answer = _tool_disabled_fallback(user_message)
             outcome.answer = answer
             yield AgentEvent(event_type="answer", data=answer)
             return
@@ -1082,7 +1103,10 @@ async def _run_execute_phase(
         if continuing_final_answer or final_parts:
             if resp.text:
                 final_parts.append(resp.text)
-            answer = _joined_final_answer(final_parts, last_text or "(no answer)")
+            answer = _joined_final_answer(
+                final_parts,
+                last_text or _empty_answer_fallback(user_message),
+            )
             answer, capped = _cap_final_answer(answer, max_final_chars)
             if capped:
                 log.warning(
@@ -1141,7 +1165,9 @@ async def _run_execute_phase(
             return
 
         if resp.stop_reason in ("end_turn", "stop_sequence"):
-            answer = _strip_leaked_no_plan(resp.text or last_text or "(no answer)")
+            answer = _strip_leaked_no_plan(
+                resp.text or last_text or _empty_answer_fallback(user_message)
+            )
             outcome.answer = answer
             yield AgentEvent(
                 event_type="answer",
@@ -1150,7 +1176,10 @@ async def _run_execute_phase(
             return
         if resp.stop_reason == "max_tokens":
             final_parts.append(resp.text or last_text or "")
-            answer = _joined_final_answer(final_parts, last_text or "(no answer)")
+            answer = _joined_final_answer(
+                final_parts,
+                last_text or _empty_answer_fallback(user_message),
+            )
             answer, capped = _cap_final_answer(answer, max_final_chars)
             if capped or max_final_continuations <= 0:
                 if capped:
@@ -1184,8 +1213,7 @@ async def _run_execute_phase(
     log.warning("conversation %s hit agent_execute_max_turns=%d", conversation_id,
                 max_execute_turns)
     fallback = _strip_leaked_no_plan(
-        last_text
-        or "This investigation exceeded the turn budget before a complete answer was produced. Please narrow the question or try another angle."
+        last_text or _turn_budget_fallback(user_message)
     )
     outcome.truncated = True
     outcome.answer = fallback

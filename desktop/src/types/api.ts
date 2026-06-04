@@ -111,6 +111,7 @@ export interface EntryPath {
 export interface SessionInfo {
   session_id: string;
   started_at: string | null;
+  mode?: ChatMode;
 }
 
 export interface SessionListEntry {
@@ -119,6 +120,7 @@ export interface SessionListEntry {
   ended_at: string | null;
   end_reason: string | null;
   preview: string;
+  mode: ChatMode;
   turn_count: number;
   total_input_tokens: number;
   total_output_tokens: number;
@@ -152,6 +154,7 @@ export interface ReplayedToolCall {
 export interface ReplayedTurn {
   conversation_id: string;
   turn_index: number;
+  mode: ChatMode;
   started_at: string | null;
   ended_at: string | null;
   user_message: string;
@@ -173,6 +176,7 @@ export interface SessionTranscript {
   started_at: string | null;
   ended_at: string | null;
   end_reason: string | null;
+  mode: ChatMode;
   turns: ReplayedTurn[];
 }
 

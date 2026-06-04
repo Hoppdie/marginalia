@@ -33,6 +33,7 @@ interface LiveStream {
   abort: AbortController;
   generation: number;
   turnIdx: number;
+  mode: ChatMode;
   turns: Turn[];
 }
 
@@ -45,11 +46,11 @@ export function ChatPage() {
   const sessionId = useChatSession((s) => s.sessionId);
   const setSessionId = useChatSession((s) => s.setSessionId);
   const turns = useChatSession((s) => s.turns);
+  const chatMode = useChatSession((s) => s.chatMode);
   const streaming = useChatSession((s) => s.streaming);
   const loading = useChatSession((s) => s.loading);
-  const { setTurns, setStreaming, setLoading, reset } = useChatSession();
+  const { setTurns, setChatMode, setStreaming, setLoading, reset } = useChatSession();
   const [input, setInput] = useState("");
-  const [chatMode, setChatMode] = useState<ChatMode>("deep");
   const [openErr, setOpenErr] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [refreshSignal, setRefreshSignal] = useState(0);
@@ -83,6 +84,7 @@ export function ChatPage() {
     const live = liveStreams.get(sessionId);
     if (live) {
       setTurns(live.turns);
+      setChatMode(live.mode);
       setStreaming(true);
       return;
     }
@@ -93,6 +95,7 @@ export function ChatPage() {
         if (cancelled) return;
         if (!useChatSession.getState().streaming) {
           setTurns(transcript.turns.map((rt) => replayedToTurn(rt, i18n)));
+          setChatMode(transcript.mode ?? inferTranscriptMode(transcript.turns));
         }
       })
       .catch((e) => {
@@ -124,10 +127,12 @@ export function ChatPage() {
     const ac = new AbortController();
     const gen = ++streamGeneration;
     const turnIdx = useChatSession.getState().turns.length;
+    const mode = useChatSession.getState().chatMode;
     const live: LiveStream = {
       abort: ac,
       generation: gen,
       turnIdx,
+      mode,
       turns: [
         ...useChatSession.getState().turns,
         { query: q, steps: [], answer: null, error: null, done: false },
@@ -140,7 +145,7 @@ export function ChatPage() {
     try {
       await streamChat(sid, q, {
         signal: ac.signal,
-        mode: chatMode,
+        mode,
         onEvent: (ev) => {
           const cur = liveStreams.get(sid);
           if (!cur || cur.generation !== gen) return;
@@ -207,6 +212,7 @@ export function ChatPage() {
     const live = liveStreams.get(id);
     if (live) {
       setTurns(live.turns);
+      setChatMode(live.mode);
       setStreaming(true);
       setLoading(false);
       return;
@@ -216,13 +222,14 @@ export function ChatPage() {
       const transcript = await sessions.messages(id);
       if (useChatSession.getState().sessionId !== id) return;
       setTurns(transcript.turns.map((rt) => replayedToTurn(rt, i18n)));
+      setChatMode(transcript.mode ?? inferTranscriptMode(transcript.turns));
     } catch (e) {
       if (useChatSession.getState().sessionId !== id) return;
       setOpenErr(e instanceof Error ? e.message : String(e));
     } finally {
       if (useChatSession.getState().sessionId === id) setLoading(false);
     }
-  }, [setSessionId, setTurns, setStreaming, setLoading, i18n]);
+  }, [setSessionId, setTurns, setChatMode, setStreaming, setLoading, i18n]);
 
   const newChat = useCallback(() => {
     const { sessionId: curSessionId } = useChatSession.getState();
@@ -522,6 +529,14 @@ function replayedToTurn(rt: ReplayedTurn, t: I18nStrings): Turn {
     error: null,
     done: rt.ended_at !== null,
   };
+}
+
+function inferTranscriptMode(turns: ReplayedTurn[]): ChatMode {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const mode = turns[i].mode;
+    if (mode === "quick" || mode === "deep") return mode;
+  }
+  return "deep";
 }
 
 function replayedToolCallStep(tc: ReplayedToolCall, t: I18nStrings): Step {

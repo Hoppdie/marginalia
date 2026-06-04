@@ -49,8 +49,8 @@ async def _create_schema() -> None:
 
 async def _seed_sessions() -> dict:
     """Three sessions:
-      A — legacy empty preview, two conversations (turn 0 + turn 1)
-      B — modern, initiating_user_message already set
+      A — legacy empty preview, two conversations (turn 0 + turn 1), latest mode deep
+      B — modern, initiating_user_message already set, latest mode quick
       C — empty preview AND no conversations (true ghost — preview stays empty)
     """
     factory = get_session_factory()
@@ -70,7 +70,7 @@ async def _seed_sessions() -> dict:
             id=new_id(), session_id=a.id, turn_index=1,
             started_at=now, ended_at=_now(),
             user_message="follow up", agent_response="...",
-            tool_calls=[], llm_calls=[],
+            tool_calls=[], llm_calls=[{"phase": "execute", "mode": "deep"}],
             total_input_tokens=0, total_output_tokens=0,
             total_tool_calls=0, total_llm_calls=0, total_duration_ms=0,
         ))
@@ -78,7 +78,7 @@ async def _seed_sessions() -> dict:
             id=new_id(), session_id=a.id, turn_index=0,
             started_at=now, ended_at=_now(),
             user_message="what is raft?", agent_response="...",
-            tool_calls=[], llm_calls=[],
+            tool_calls=[], llm_calls=[{"phase": "execute", "mode": "quick"}],
             total_input_tokens=0, total_output_tokens=0,
             total_tool_calls=0, total_llm_calls=0, total_duration_ms=0,
         ))
@@ -86,11 +86,20 @@ async def _seed_sessions() -> dict:
         # B — modern session, write-side backfill in place
         b = Session(id=new_id(), started_at=now - timedelta(minutes=2),
                     ended_at=None, end_reason=None,
-                    initiating_user_message="hello there", turn_count=0,
+                    initiating_user_message="hello there", turn_count=1,
                     total_input_tokens=0, total_output_tokens=0,
                     total_cache_read=0, total_tool_calls=0,
                     total_llm_calls=0, total_duration_ms=0)
         s.add(b)
+        await s.flush()
+        s.add(Conversation(
+            id=new_id(), session_id=b.id, turn_index=0,
+            started_at=now, ended_at=_now(),
+            user_message="ignored preview fallback", agent_response="...",
+            tool_calls=[], llm_calls=[{"phase": "execute", "mode": "quick"}],
+            total_input_tokens=0, total_output_tokens=0,
+            total_tool_calls=0, total_llm_calls=0, total_duration_ms=0,
+        ))
 
         # C — ghost: empty preview, no conversations
         c = Session(id=new_id(), started_at=now - timedelta(minutes=1),
@@ -115,10 +124,13 @@ async def test_preview_fallback() -> None:
 
     # A: legacy empty — fallback to turn 0 user_message
     assert by_id[seeded["a"]]["preview"] == "what is raft?", by_id[seeded["a"]]
+    assert by_id[seeded["a"]]["mode"] == "deep"
     # B: modern — preview comes from initiating_user_message untouched
     assert by_id[seeded["b"]]["preview"] == "hello there"
+    assert by_id[seeded["b"]]["mode"] == "quick"
     # C: ghost — no conversations, preview stays empty (no spurious fill)
     assert by_id[seeded["c"]]["preview"] == ""
+    assert by_id[seeded["c"]]["mode"] == "deep"
     print("[1] preview fallback: legacy filled, modern preserved, ghost stays empty")
 
 

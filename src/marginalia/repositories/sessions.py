@@ -29,8 +29,31 @@ from marginalia.db.models import Conversation, Session
 from marginalia.utils.ids import new_id
 
 
+CHAT_MODES = {"deep", "quick"}
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def mode_from_llm_calls(llm_calls: Any) -> str | None:
+    """Return the last recorded chat mode from a conversation audit trail."""
+    if not isinstance(llm_calls, list):
+        return None
+    for call in reversed(llm_calls):
+        if not isinstance(call, Mapping):
+            continue
+        mode = call.get("mode")
+        extra = call.get("extra")
+        if mode is None and isinstance(extra, Mapping):
+            mode = extra.get("mode")
+        if isinstance(mode, str) and mode in CHAT_MODES:
+            return mode
+    return None
+
+
+def conversation_mode(conv: Conversation) -> str | None:
+    return mode_from_llm_calls(conv.llm_calls)
 
 
 async def create_session(
@@ -135,6 +158,33 @@ async def list_sessions(
         )
     ).scalars().all()
     return list(rows)
+
+
+async def latest_session_modes(
+    db: AsyncSession, session_ids: list[str],
+) -> dict[str, str]:
+    """Last recorded chat mode for each session, keyed by session id."""
+    if not session_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                Conversation.session_id,
+                Conversation.turn_index,
+                Conversation.llm_calls,
+            )
+            .where(Conversation.session_id.in_(session_ids))
+            .order_by(Conversation.session_id.asc(), Conversation.turn_index.desc())
+        )
+    ).all()
+    modes: dict[str, str] = {}
+    for session_id, _turn_index, llm_calls in rows:
+        if session_id in modes:
+            continue
+        mode = mode_from_llm_calls(llm_calls)
+        if mode:
+            modes[session_id] = mode
+    return modes
 
 
 async def get_live(db: AsyncSession, session_id: str) -> Session | None:

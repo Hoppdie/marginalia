@@ -125,6 +125,9 @@ async def list_sessions(
     reason if any.
     """
     rows = await session_service.list_sessions(db, limit=limit, offset=offset)
+    latest_modes = await session_service.latest_session_modes(
+        db, [s.id for s in rows],
+    )
 
     # Legacy sessions opened before write-side backfill have an empty
     # `initiating_user_message`. Fill those previews from the first
@@ -148,6 +151,7 @@ async def list_sessions(
                 "ended_at": s.ended_at.isoformat() if s.ended_at else None,
                 "end_reason": s.end_reason,
                 "preview": _preview(s),
+                "mode": latest_modes.get(s.id, "deep"),
                 "turn_count": s.turn_count or 0,
                 "total_input_tokens": s.total_input_tokens or 0,
                 "total_output_tokens": s.total_output_tokens or 0,
@@ -182,6 +186,12 @@ async def session_messages(
         raise HTTPException(status_code=404, detail="session not found")
 
     convs = await session_service.list_for_session_ordered(db, session_id)
+    session_mode = "deep"
+    for c in reversed(convs):
+        mode = session_service.conversation_mode(c)
+        if mode:
+            session_mode = mode
+            break
 
     # Pre-resolve every id referenced by any tool_call in this session
     # so the replay payload mirrors the live SSE shape (each call gets a
@@ -267,6 +277,7 @@ async def session_messages(
         turns.append({
             "conversation_id": c.id,
             "turn_index": c.turn_index,
+            "mode": session_service.conversation_mode(c) or "deep",
             "started_at": c.started_at.isoformat() if c.started_at else None,
             "ended_at": c.ended_at.isoformat() if c.ended_at else None,
             "user_message": c.user_message,
@@ -291,5 +302,6 @@ async def session_messages(
         "started_at": s.started_at.isoformat() if s.started_at else None,
         "ended_at": s.ended_at.isoformat() if s.ended_at else None,
         "end_reason": s.end_reason,
+        "mode": session_mode,
         "turns": turns,
     }

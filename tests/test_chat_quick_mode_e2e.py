@@ -177,6 +177,8 @@ async def test_quick_mode_forces_third_execute_round_to_answer() -> None:
     _install_chat(chat)
 
     transport = ASGITransport(app=app)
+    list_body = None
+    messages_body = None
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             created = await c.post(
@@ -191,6 +193,12 @@ async def test_quick_mode_forces_third_execute_round_to_answer() -> None:
                 f"/v1/chat/{session_id}",
                 json_body={"query": "answer quickly", "mode": "quick"},
             )
+            listed = await c.get("/v1/sessions")
+            assert listed.status_code == 200, listed.text
+            list_body = listed.json()
+            messages = await c.get(f"/v1/sessions/{session_id}/messages")
+            assert messages.status_code == 200, messages.text
+            messages_body = messages.json()
 
     seq = [event["event"] for event in events]
     assert seq.count("thinking") == 4, seq
@@ -224,6 +232,10 @@ async def test_quick_mode_forces_third_execute_round_to_answer() -> None:
     assert done["tool_calls"] == 3
     assert done["truncated"] is False
     assert done["mode"] == "quick"
+    row = next(row for row in list_body["sessions"] if row["session_id"] == session_id)
+    assert row["mode"] == "quick"
+    assert messages_body["mode"] == "quick"
+    assert messages_body["turns"][0]["mode"] == "quick"
 
 
 async def test_quick_mode_repairs_tool_call_on_final_answer_round() -> None:
