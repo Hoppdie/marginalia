@@ -3,63 +3,85 @@
 > English: [README.md](README.md)
 > 设计文档: [DESIGN.md](DESIGN.md)
 
-Marginalia 是面向个人图书馆的本地优先研究 agent。它适合管理 PDF、笔记、
-Office 文档、图片、表格、日志、压缩包和长期积累的调查历史。AI 在后台
-编目、归类、交叉引用;你提问时,调查员 agent 会检索笔记本(journal)、召回
-候选材料、阅读原文片段,最后给出带引用的回答。
+**把你的 PDF、笔记、表格、日志和压缩包变成一个能读原文、会引用来源的私人
+AI 图书馆。**
 
-![Marginalia 桌面端界面](docs/images/desktop-gui.jpg)
+Marginalia 是本地优先的个人研究 agent。它把杂乱的私有文件整理成一个可
+检索、可追溯的知识库:文件仍然放在普通文件夹里,AI 负责编目、打标签、
+建立关联;你提问时,agent 会先找材料,再读原文片段,最后给出带引用的回答。
 
-核心思路不是“把所有东西切块后丢进向量库”。Marginalia 先用 journal、
-文件夹、catalog、tag、view、metadata 和 `recall_knowledge` 缩小范围,再按需
-合并词法召回、可选 embedding 召回、RRF 风格打分、可选 rerank 和 evidence
-配额,最后让 agent 读取原文的章节、页码、段落、行号、压缩包成员或表格切片。
+[下载桌面应用](https://github.com/shenmintao/marginalia/releases) ·
+[CLI 快速开始](#cli-快速开始) · [使用手册](USAGE.zh-CN.md) ·
+[设计文档](DESIGN.md)
 
-## 能力定位
+![Marginalia 宣传图](docs/images/marginalia-promo.png)
 
-Marginalia 可以实事求是地宣传为一个能力很强的个人图书馆研究 agent。强项
-不是单次关键词搜索,而是“找到材料 → 验证 metadata → 阅读原文 → 交叉比对证据
-→ 产出带引用报告”的完整调查链路。相比普通 top-k RAG,它可以多步迭代:
-回忆旧调查、走结构化检索、跟随相关 entry、修正搜索路径,再基于原文作答。
+## 适合谁
 
-边界也很明确:完整 ReAct 流程更慢、LLM 调用更多,不适合作为每个快速查询的
-最低成本路径。对短问题,它接近一个 hybrid RAG;对需要溯源和综合判断的研究
-报告,多步工作流才是优势所在。
+- 你有很多 PDF、笔记、Office 文档、图片、表格、日志和压缩包,但它们分散
+  在不同文件夹里。
+- 你不想再把所有东西切块后丢进一个黑盒向量库,而是希望答案能回到原文。
+- 你需要既能快速查找,也能做更慢但更完整的溯源式研究报告。
+- 你想让本地文件保持可读、可备份、可迁移,而不是被锁进某个云端系统。
 
-因此 chat 界面提供按轮选择的两种模式:**快速**会先规划,但最多允许两次紧凑
-取证,第三次 execute 强制产出最终回答;**深入**保留完整 ReAct 调查循环,适合
-更重视覆盖率而不是延迟的问题。
+## 它能做什么
 
-## 它怎么工作
+- 入库 text、Markdown、PDF、DOCX、图片、表格、日志和常见压缩包。
+- 用文件夹、catalog、tag、view、metadata、journal 和关系挖掘组织材料。
+- 默认走词法召回;需要时可开启 embedding、`sqlite-vec`、rerank 和证据配额。
+- 回答前读取原文的章节、页码、段落、行号、压缩包成员或表格切片。
+- 输出带引用的回答和报告,并把每轮调查写回 journal,供后续问题复用。
 
-三种身份,严格分离:
+## 立即试用
 
-- **🏛️ 图书馆员** —— 离线批处理。入册新文件、归并同义 tag、重整
-  catalog。AI 内部状态绝大部分由它写。
-- **🔍 调查员** —— 在线 agent。Plan → 工具调用 → 带引用的答案。每轮
-  对话结束写 journal + 观察到的 entry 关联。
-- **👤 你** —— 上传、整理文件夹、归档、删除。库是你的;AI 的工作产物
-  独立存放。
+### 桌面应用
 
-调查员的笔记本是真的一张表(`journal`),图书馆员后续重整时会读它——
-这个反馈回路就是库越用越懂你的机制。
+[Releases 页面](https://github.com/shenmintao/marginalia/releases) 提供桌面包:
 
-文件按内容寻址(sha256)。每一处摆放(folder + display_name)各自有
-独立的 AI 字段(catalog / extra / tags),所以同一份 PDF 在
-`/工作` 和 `/研究` 下可以有完全不同的解读。
+- **Windows**: x64/arm64 安装包和 portable zip。
+- **macOS**: Apple Silicon DMG。
+- **Linux**: x64/arm64 `.deb` 和 `.rpm`。
 
-## 快速开始
+每个包都内置 Python 运行时,无需系统 Python。当前二进制还没有代码签名,
+所以 Windows SmartScreen 或 macOS Gatekeeper 第一次打开时可能会要求手动
+确认。
+
+- **Windows**: 如果 SmartScreen 拦截,点 **更多信息** -> **仍要运行**。
+- **macOS**: 把 App 拖到 `/Applications` 后,如果提示 App 已损坏或无法验证,
+  运行 `xattr -dr com.apple.quarantine /Applications/Marginalia.app`。
+
+### CLI 快速开始
 
 ```bash
 python -m venv .venv
-source .venv/Scripts/activate            # Windows: .venv\Scripts\activate
+
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+source .venv/bin/activate
+
 pip install -e ".[dev]"
+marginalia init
+```
 
-mkdir my-library && cd my-library
-marginalia init                          # 生成 .env 和本地目录
-# 编辑 .env 填 LLM_DEFAULT_API_KEY
+编辑 `.env`:
 
+```ini
+LLM_DEFAULT_PROVIDER=openai
+LLM_DEFAULT_API_KEY=sk-...
+LLM_DEFAULT_MODEL=gpt-4o-mini
+```
+
+启动内嵌 CLI + API + worker:
+
+```bash
 marginalia
+```
+
+然后:
+
+```text
 marginalia> /upload paper.pdf /
 marginalia> 比较一下 raft 和 paxos
 ```
@@ -75,35 +97,36 @@ marginalia> 比较一下 raft 和 paxos
 `MARGINALIA_HOME=/some/path` 把整个目录(db + library + cache)挪到
 任意位置。
 
-## 桌面应用
+## 可以这样问
 
-[Releases 页面](https://github.com/shenmintao/marginalia/releases) 提
-供 Windows x64/arm64、macOS Apple Silicon、Linux x64/arm64 的桌面包。
-每个包都内置了自己的 Python 运行时——无需系统 Python。
+```text
+比较一下这篇 Raft 论文和我的 Paxos 笔记。
+从日志和复盘文档里整理事故时间线。
+哪些上传的论文支持这个结论,哪些反对?
+总结这个表格,并标出结论用到了哪些行。
+把这个文件夹整理成一份带引用的研究简报。
+```
 
-- **Windows**: `marginalia-v<version>-windows-x64-setup.exe` /
-  `marginalia-v<version>-windows-x64-portable.zip`,以及 arm64 对应包。需要
-  Microsoft Edge WebView2 Runtime(当前 Windows 10 / 11 通常已内置)。
-- **macOS**: `marginalia-v<version>-macos-arm64.dmg`,仅支持 Apple Silicon。
-- **Linux**: `marginalia-v<version>-linux-x64.deb` / `.rpm`,以及 arm64 对应包。
+## 和普通 RAG 的区别
 
-### 首次启动须知(未签名二进制)
+Marginalia 不只是“取 top-k chunk 然后回答”。它会先用 journal、文件夹、
+catalog、tag、view、metadata 和 `recall_knowledge` 缩小范围,再按需合并
+词法召回、可选 embedding 召回、RRF 风格打分、可选 rerank 和 evidence 配额。
+最后 agent 会读取原文窗口,而不是只依赖预切 chunk。
 
-由于没有 Apple Developer / Microsoft EV 证书,这些包都没有做代码签
-名,第一次打开时系统会弹警告。点一下放行就好,以后再打开就不会再弹
-了。
+短问题可以走**快速**模式;需要覆盖率和交叉验证的问题可以走**深入**模式,
+保留完整 ReAct 调查循环。
 
-- **Windows SmartScreen** — 弹出"Windows 已保护你的电脑"。点
-  **更多信息** → **仍要运行**。
-- **macOS Gatekeeper** — 报"Marginalia.app 已损坏"或"无法验证开
-  发者"。把 App 拖到 `/Applications` 之后,先跑一次:
+## 它怎么工作
 
-  ```bash
-  xattr -dr com.apple.quarantine /Applications/Marginalia.app
-  ```
+三个角色分工:
 
-桌面应用默认把数据库、library、`.env` 都放在 `~/Marginalia/` 下。启
-动前设置 `MARGINALIA_HOME` 可以挪到别的位置。
+- **图书馆员**: 离线批处理。入册新文件、归并同义 tag、重整 catalog。
+- **调查员**: 在线 agent。Plan -> 工具调用 -> 读原文 -> 带引用的答案。
+- **你**: 上传、整理文件夹、归档、删除。库是你的;AI 的工作产物独立存放。
+
+调查员的笔记本是真的一张表(`journal`),图书馆员后续重整时会读它。这个
+反馈回路让库越用越懂你的材料。
 
 ## CLI
 
@@ -351,6 +374,12 @@ marginalia --server http://localhost:8000
 Compose 在 api 启动时跑 `alembic upgrade head`,通过一次性 init
 容器创建 MinIO bucket。卷(`pgdata` / `miniodata` / `margdata`)
 跨重启持久化。
+
+## 文档
+
+- [USAGE.zh-CN.md](USAGE.zh-CN.md): 使用和运维手册。
+- [DESIGN.md](DESIGN.md): 数据模型、检索设计、任务系统和关键不变量。
+- [docs/LAUNCH.md](docs/LAUNCH.md): 宣传文案、social preview 和社区发帖模板。
 
 ## 开发
 

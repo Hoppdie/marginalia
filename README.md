@@ -3,69 +3,65 @@
 > Chinese README: [README.zh-CN.md](README.zh-CN.md)
 > Detailed design: [DESIGN.md](DESIGN.md)
 
-Marginalia is a local-first research agent for private heterogeneous knowledge
-bases.
+**Turn your PDFs, notes, spreadsheets, logs, and archives into a private AI
+library that answers from original sources.**
 
-It is designed for people who do not want another black-box vector search layer
-over their files. Marginalia narrows the search space through journals,
-folders, catalogs, tags, views, metadata, optional semantic recall, reranking,
-and evidence-graph traversal — then reads the original file windows before
-producing cited answers and reports.
+Marginalia is a local-first research agent for people with messy private
+knowledge bases. It keeps your files in a normal folder tree, builds useful
+library metadata around them, and makes the agent read the relevant original
+file windows before it writes a cited answer.
 
-For quick lookups, it behaves like hybrid RAG. For research-style questions,
-its full ReAct investigation workflow can iterate over prior memory, metadata,
-related entries, and original source slices to produce stronger source-grounded
-reports.
+[Download desktop app](https://github.com/shenmintao/marginalia/releases) ·
+[CLI quickstart](#cli-quickstart) · [Usage guide](USAGE.md) ·
+[Design notes](DESIGN.md)
 
 ![Marginalia promotional hero](docs/images/marginalia-promo-en.png)
 
-The retrieval funnel is deliberately structured:
+## Why Use It
 
-1. narrow the search space with journals, folders, catalogs, tags, views,
-   metadata, and the high-level `recall_knowledge` tool;
-2. merge lexical metadata recall with optional embedding recall, then apply
-   RRF-style scoring, optional reranking, and source quotas;
-3. discover neighbouring evidence through relation-mining and
-   recommendation-style graph traversal;
-4. read the original file at the relevant section, line, page, paragraph,
-   archive member, or table slice;
-5. answer with citations that point back to source entries and, where possible, exact quotes or PDF pages.
+- You have research papers, meeting notes, PDFs, tables, logs, screenshots, and
+  archives that do not fit cleanly into one app.
+- You want answers that cite the source material instead of a black-box vector
+  search layer over chunks.
+- You need both quick lookups and slower investigation-style reports over the
+  same private library.
+- You want local-first storage: the default `mirror` backend keeps your library
+  as readable files under `MARGINALIA_HOME/library`.
 
-This gives the LLM a controlled way to work inside a private library: recall prior investigations, inspect candidates, verify facts against originals, and leave behind durable notes for future turns.
+## What It Does
 
-## Capability Positioning
+- Ingests text, Markdown, PDFs, DOCX, images, spreadsheets, logs, and archives.
+- Organizes material with folders, catalogs, tags, views, metadata, journals,
+  and relation mining.
+- Recalls candidates with lexical search by default, plus optional embeddings,
+  `sqlite-vec`, reranking, and source quotas.
+- Reads original sections, pages, lines, archive members, or table slices before
+  answering.
+- Produces cited answers and reports, then writes durable investigation notes
+  that future turns can recall.
 
-Marginalia is strongest when the task is not a single keyword lookup, but a
-source-grounded investigation over a personal library: finding the right
-materials, reading the relevant parts, reconciling evidence, and producing a
-report with citations. In that setting, it is more capable than a plain
-"retrieve top-k chunks and answer" pipeline because the agent can iterate:
-recall prior work, inspect metadata, follow related entries, read original
-sections, and correct its search path.
+## Try It
 
-The tradeoff is latency and cost. The full ReAct workflow is designed as a
-deep-investigation mode, not as the cheapest path for every quick lookup. For
-short factual questions, Marginalia behaves like a hybrid RAG system; for
-research-style questions, the multi-step workflow is where the system's
-advantage shows up.
+### Desktop App
 
-The chat UI therefore exposes two per-turn modes. **Quick** still plans, but
-allows at most two compact evidence-gathering passes before forcing a final
-answer on the third execute call. **Deep** keeps the full ReAct investigation
-loop for questions where coverage matters more than latency.
+Download the latest desktop package from
+[GitHub Releases](https://github.com/shenmintao/marginalia/releases):
 
-## What Marginalia Provides
+- **Windows**: x64/arm64 installer and portable zip.
+- **macOS**: Apple Silicon DMG.
+- **Linux**: x64/arm64 `.deb` and `.rpm`.
 
-- **Private heterogeneous library**: text, Markdown, PDFs, DOCX, images, spreadsheets, logs, and archives live in one searchable system.
-- **Structured funnel retrieval**: catalog tree, tags, views, metadata, journal recall, and targeted file reads replace ad hoc chunk retrieval.
-- **Hybrid recall when useful**: lexical FTS/BM25-style metadata recall remains the default; optional DashScope/Bailian-compatible embeddings, `sqlite-vec`, and reranking can be enabled without changing the core workflow.
-- **Persistent investigation journal**: every completed turn can write a compact `journal` entry that future planning can search.
-- **Recommendation-style evidence discovery**: background miners populate `entry_relations` from session co-occurrence, tag overlap, citation co-citation, and corpus evidence; LLM vetting filters noisy edges; query-time random walk surfaces related entries.
-- **Original-source verification**: answers cite `entry_id`, optional verbatim `quote`, optional PDF physical `page`, and a reason. PDF quote lookup can correct page offsets caused by covers or tables of contents.
-- **Measurable report quality**: `marginalia eval` imports BEIR-style datasets, evaluates retrieval pools, probes final answers, and compares one-shot RAG reports with the full ReAct investigation workflow.
-- **Local-first storage**: default mirror storage keeps files in a normal folder tree under `MARGINALIA_HOME/library`.
+The desktop builds bundle their own Python runtime. They are currently unsigned,
+so Windows SmartScreen or macOS Gatekeeper may ask you to confirm the first
+launch.
 
-## Quickstart
+- **Windows**: click **More info** -> **Run anyway** if SmartScreen blocks the
+  first launch.
+- **macOS**: after dragging the app to `/Applications`, run
+  `xattr -dr com.apple.quarantine /Applications/Marginalia.app` if Gatekeeper
+  reports that the app is damaged or cannot be verified.
+
+### CLI Quickstart
 
 Requires Python 3.11+.
 
@@ -106,6 +102,24 @@ marginalia> /export
 ```
 
 The first launch bootstraps the database schema automatically.
+
+## Example Questions
+
+```text
+Compare this Raft paper with my Paxos notes.
+Find the incident timeline across the logs and the postmortem.
+Which uploaded papers support this claim, and which contradict it?
+Summarize the spreadsheet, then cite the rows used for the conclusion.
+Turn this folder into a cited research brief.
+```
+
+## How It Differs From Plain RAG
+
+Marginalia is not just "retrieve top-k chunks and answer." The agent can recall
+prior investigations, inspect structured metadata, follow related entries, read
+original source windows, and correct its search path before writing. Quick mode
+keeps this bounded for short lookups; Deep mode keeps the full ReAct
+investigation loop when coverage matters more than latency.
 
 ## The Retrieval Funnel
 
@@ -344,6 +358,7 @@ docker compose up -d
 - [USAGE.md](USAGE.md): operations manual.
 - [DESIGN.md](DESIGN.md): data model, retrieval design, task system, invariants.
 - [samples/architecture.md](samples/architecture.md): developer architecture overview.
+- [docs/LAUNCH.md](docs/LAUNCH.md): launch copy, social preview notes, and community post templates.
 
 ## Development
 
