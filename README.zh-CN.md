@@ -124,7 +124,7 @@ marginalia> 比较一下 raft 和 paxos
 /info <entry_id>                查看 entry 的用户可见 metadata + summary
 /download <entry_id|folder_id>  文件 → 字节;文件夹 → zip
 /export [<conv_id>]             把对话 + 引用打包成 zip
-/on-conflict rename|error|skip  设置重名策略
+/mode [quick|deep]              查看或切换 chat 模式
 /clear  /  /new                 结束 / 开始 chat session
 /quit
 ```

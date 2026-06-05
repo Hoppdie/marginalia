@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, MutableMapping
+from typing import Awaitable, Callable, Literal, MutableMapping, cast
 
 from marginalia.cli.client import CliHttpError, MarginaliaClient
 from marginalia.cli.render import (
@@ -32,6 +32,7 @@ class CliContext:
     session_id: str | None = None
     cwd_remote: str = "/"  # for resolving relative remote paths
     history: list[dict] = field(default_factory=list)
+    chat_mode: Literal["deep", "quick"] = "deep"
     storage_backend: str = "?"  # filled from /health at startup
     # Tab-completion caches. Populated as a side effect of user commands
     # (search/ls/info/discover) — completion only suggests entries the
@@ -108,6 +109,21 @@ async def cmd_help(ctx: CliContext, args: str) -> None:
         print(f"  {name:<20} {doc}")
     print("\nAnything not starting with '/' is treated as chat with the agent.")
     print(f"current cwd: {ctx.cwd_remote!r}\n")
+    print(f"current chat mode: {ctx.chat_mode}\n")
+
+
+@command("mode")
+async def cmd_mode(ctx: CliContext, args: str) -> None:
+    """/mode [quick|deep] - show or change the chat investigation mode."""
+    value = args.strip().lower()
+    if not value:
+        print(f"current chat mode: {ctx.chat_mode}")
+        return
+    if value not in {"quick", "deep"}:
+        print("usage: /mode quick|deep")
+        return
+    ctx.chat_mode = cast(Literal["deep", "quick"], value)
+    print(f"chat mode set to {ctx.chat_mode}")
 
 
 @command("quit")
@@ -740,7 +756,11 @@ async def chat(ctx: CliContext, message: str) -> None:
     tool_count = 0
 
     try:
-        async for ev in ctx.client.stream_chat(ctx.session_id, message):
+        async for ev in ctx.client.stream_chat(
+            ctx.session_id,
+            message,
+            mode=ctx.chat_mode,
+        ):
             if ev.event_type == "conversation":
                 conversation_id = ev.data
             elif ev.event_type == "planning":

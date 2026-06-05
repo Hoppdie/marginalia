@@ -4,6 +4,7 @@ import pytest
 
 from marginalia.agent.tools import ToolContext
 from marginalia.agent.tools.recall_knowledge import (
+    _candidate_entry_ids,
     apply_rerank_hits,
     score_recall_entries,
     select_evidence_entry_ids,
@@ -160,6 +161,18 @@ def test_recall_evidence_selection_can_use_ranked_order_without_quota() -> None:
     ]
 
     assert select_evidence_entry_ids(rows, 2, strategy="rerank") == ["sem1", "sem2"]
+
+
+def test_candidate_entry_ids_prioritize_selected_entries_before_notes() -> None:
+    notes = [
+        {"entry_ids": ["note-only", "entry-2"]},
+    ]
+    entries = [
+        {"entry_id": "entry-1"},
+        {"entry_id": "entry-2"},
+    ]
+
+    assert _candidate_entry_ids(notes, entries, 2) == ["entry-1", "entry-2"]
 
 
 def test_apply_rerank_hits_reorders_only_reranked_window() -> None:

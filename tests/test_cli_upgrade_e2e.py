@@ -11,17 +11,23 @@ Run:
 """
 from __future__ import annotations
 
+import atexit
 import io
 import os
 import shutil
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_cli_upgrade_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get(
+    "MARGINALIA_TEST_TMP",
+    str(Path(__file__).resolve().parent),
+))
+_TEST_PARENT.mkdir(parents=True, exist_ok=True)
+_TEST_ROOT = _TEST_PARENT / f"_cli_upgrade_e2e_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
+atexit.register(lambda: shutil.rmtree(_TEST_ROOT, ignore_errors=True))
 
 # Force the spinner / colour code into a deterministic OFF state so the
 # test runs identically on TTY and non-TTY.  The Spinner itself also has a
@@ -166,6 +172,10 @@ def test_init_project_creates_artifacts() -> None:
     assert "DB_BACKEND" in env
     assert "STORAGE_BACKEND" in env
     assert "LLM_DEFAULT_API_KEY" in env
+    assert "EMBEDDING_API_KEY" in env
+    assert "SEMANTIC_RECALL_ENABLED" in env
+    assert "RERANK_ENABLED" in env
+    assert "EVIDENCE_SELECTION" in env
 
     print("[C1] init_project bootstrap files created")
 

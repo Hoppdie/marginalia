@@ -818,14 +818,14 @@ def _candidate_entry_ids(
     limit: int,
 ) -> list[str]:
     out: list[str] = []
-    for note in notes:
-        for entry_id in note.get("entry_ids") or []:
-            _append_unique(out, str(entry_id))
-            if len(out) >= limit:
-                return out
     for entry in entries:
         entry_id = entry.get("entry_id")
         if entry_id:
+            _append_unique(out, str(entry_id))
+            if len(out) >= limit:
+                return out
+    for note in notes:
+        for entry_id in note.get("entry_ids") or []:
             _append_unique(out, str(entry_id))
             if len(out) >= limit:
                 return out

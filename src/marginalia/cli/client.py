@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Literal, Mapping
 
 import httpx
 
@@ -139,7 +139,11 @@ class MarginaliaClient:
         return r.json()
 
     async def stream_chat(
-        self, session_id: str, query: str
+        self,
+        session_id: str,
+        query: str,
+        *,
+        mode: Literal["deep", "quick"] = "deep",
     ) -> AsyncIterator[ChatEvent]:
         """Stream agent events for one chat turn.
 
@@ -151,7 +155,7 @@ class MarginaliaClient:
         async with self._http.stream(
             "POST",
             f"/v1/chat/{session_id}",
-            json={"query": query},
+            json={"query": query, "mode": mode},
             timeout=None,
         ) as r:
             if r.status_code >= 400:

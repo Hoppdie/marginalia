@@ -165,12 +165,12 @@ async def search_metadata(
     )
 
     total = await entries_repo.count_filtered(db, **common_filters)
-    if _should_rerank(text_q, tags_all, tags_any):
+    if _should_apply_metadata_rank(text_q, tags_all, tags_any):
         fetch_limit = min(total, max(limit + offset, min(500, total)))
         rows = await entries_repo.search_filtered(
             db, **common_filters, limit=fetch_limit, offset=0,
         )
-        rows = await _rerank_rows(
+        rows = await _rank_rows_by_metadata_signal(
             db,
             rows,
             text_terms=text_q or [],
@@ -211,7 +211,7 @@ def _entry_row(entry: Any, file_row: Any) -> dict[str, Any]:
     return row
 
 
-async def _rerank_rows(
+async def _rank_rows_by_metadata_signal(
     db: AsyncSession,
     rows: list[tuple[Any, Any]],
     *,
@@ -243,7 +243,7 @@ async def _rerank_rows(
     return [row for _score, _idx, row in scored]
 
 
-def _should_rerank(
+def _should_apply_metadata_rank(
     text_q: list[str] | None,
     tags_all: list[str],
     tags_any: list[str],

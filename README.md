@@ -232,6 +232,7 @@ Slash commands:
 /export [conversation_id]     export answer and citations
 /tend                         run a maintenance pass
 /background                   show queued/running tasks
+/mode [quick|deep]            show or change chat mode
 /new / /clear / /quit         session control
 ```
 

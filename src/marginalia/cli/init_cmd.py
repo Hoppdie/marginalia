@@ -54,6 +54,27 @@ LLM_DEFAULT_MODEL=gpt-4o-mini
 # Per-profile overrides (uncomment to use):
 # LLM_REFLECT_MODEL=gpt-4o
 # LLM_VISION_MODEL=gpt-4o
+
+# Optional semantic recall. Credentials are separate from chat/vision/ingest.
+EMBEDDING_PROVIDER=openai-compatible
+EMBEDDING_API_KEY=
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v4
+EMBEDDING_DIMENSIONS=1024
+EMBEDDING_BATCH_SIZE=10
+SEMANTIC_INDEX_BACKEND=auto
+SEMANTIC_RECALL_ENABLED=false
+SEMANTIC_RECALL_LIMIT=100
+
+# Optional rerank. Leave disabled unless RERANK_API_KEY is configured.
+RERANK_ENABLED=false
+RERANK_API_KEY=
+RERANK_BASE_URL=https://dashscope.aliyuncs.com/compatible-api/v1
+RERANK_MODEL=qwen3-rerank
+RERANK_TOP_N=80
+RERANK_MAX_DOC_CHARS=1800
+RERANK_CONCURRENCY=10
+EVIDENCE_SELECTION=quota
 """
 
 

@@ -7,6 +7,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import io
 import json
 import os
@@ -14,11 +15,16 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_cli_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get(
+    "MARGINALIA_TEST_TMP",
+    str(Path(__file__).resolve().parent),
+))
+_TEST_PARENT.mkdir(parents=True, exist_ok=True)
+_TEST_ROOT = _TEST_PARENT / f"_cli_e2e_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
+atexit.register(lambda: shutil.rmtree(_TEST_ROOT, ignore_errors=True))
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["WORKER_ENABLED"] = "false"
@@ -52,7 +58,11 @@ class _FakeChat:
     profile_name = "chat"
     model = "fake-chat"
 
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
     async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
         # plan phase: tools=None
         if not request.tools:
             return ChatResponse(
@@ -79,7 +89,8 @@ def _install_fake_chat(client) -> None:
 
 async def main() -> None:
     await _create_schema()
-    _install_fake_chat(_FakeChat())
+    fake_chat = _FakeChat()
+    _install_fake_chat(fake_chat)
 
     # Local file to upload
     upload_local = _TEST_ROOT / "hello.md"
@@ -136,32 +147,47 @@ async def main() -> None:
         assert "agent" in ctx.history[0]["assistant"]
         print("[10] chat OK; session_id=", ctx.session_id)
 
-        # --- 11. /clear -> session ends; next chat opens new ----------
+        # --- 11. /mode quick -> chat request uses quick runtime ---------
+        await dispatch(ctx, "/mode quick")
+        assert ctx.chat_mode == "quick"
+        before = len(fake_chat.requests)
+        await dispatch(ctx, "quick question")
+        quick_requests = fake_chat.requests[before:]
+        assert any(
+            "Quick mode" in msg.content
+            for req in quick_requests
+            for msg in req.messages
+        ), "CLI did not pass quick mode to /v1/chat"
+        await dispatch(ctx, "/mode deep")
+        assert ctx.chat_mode == "deep"
+        print("[11] /mode quick/deep OK")
+
+        # --- 12. /clear -> session ends; next chat opens new ----------
         prior = ctx.session_id
         await dispatch(ctx, "/clear")
         assert ctx.session_id is None
         await dispatch(ctx, "再次提问")
         assert ctx.session_id is not None and ctx.session_id != prior
-        print("[11] /clear -> new session", ctx.session_id)
+        print("[12] /clear -> new session", ctx.session_id)
 
-        # --- 12. /quit raises _ExitREPL ----------------------------------
+        # --- 13. /quit raises _ExitREPL ----------------------------------
         try:
             await dispatch(ctx, "/quit")
         except _ExitREPL:
-            print("[12] /quit raises _ExitREPL")
+            print("[13] /quit raises _ExitREPL")
         else:
             assert False, "/quit did not raise _ExitREPL"
 
-        # --- 13. unknown command (graceful) ------------------------------
+        # --- 14. unknown command (graceful) ------------------------------
         await dispatch(ctx, "/no-such-command")
-        print("[13] unknown command handled")
+        print("[14] unknown command handled")
 
         await client.aclose()
 
-    # --- 14. render_markdown produces ANSI escapes when supported -------
+    # --- 15. render_markdown produces ANSI escapes when supported -------
     sample = "# T\n\n**bold** and `code` and *italic*\n\n```py\nx = 1\n```"
     rendered = render_markdown(sample)
-    print("[14] render_markdown sample length:", len(rendered))
+    print("[15] render_markdown sample length:", len(rendered))
     assert "T" in rendered
     assert "bold" in rendered
 
