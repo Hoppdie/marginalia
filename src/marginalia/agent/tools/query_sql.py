@@ -54,7 +54,7 @@ SHEET_NAME_COLUMN = "__sheet_name"
 
 _FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|ATTACH|COPY|PRAGMA|EXPORT|"
-    r"INSTALL|LOAD|TRUNCATE|GRANT|REVOKE|MERGE|REPLACE)\b",
+    r"INSTALL|LOAD|SET|TRUNCATE|GRANT|REVOKE|MERGE|REPLACE)\b",
     re.IGNORECASE,
 )
 _DANGEROUS_FUNCS = re.compile(
@@ -273,8 +273,8 @@ def _run_duckdb(
     try:
         all_cols: list[dict[str, str]] = []
         tables: list[dict[str, Any]] = []
-        for i, ((path, entry, f), (_, _, ext)) in enumerate(
-            zip(on_disk, records)
+        for i, ((path, entry, _file), (_, _, ext)) in enumerate(
+            zip(on_disk, records, strict=True)
         ):
             table = f"t{i + 1}"
             safe_path = path.replace("\\", "/")
@@ -306,6 +306,7 @@ def _run_duckdb(
                 "row_count": int(row_count),
             })
 
+        _lock_external_access(conn)
         rewritten, fixes = _reconcile_columns(sql, all_cols)
         try:
             cur = conn.execute(rewritten)
@@ -391,6 +392,12 @@ def _run_duckdb(
         return result
     finally:
         conn.close()
+
+
+def _lock_external_access(conn) -> None:
+    """Disable DuckDB filesystem/network reads before model-authored SQL runs."""
+    conn.execute("SET enable_external_access = false")
+    conn.execute("SET lock_configuration = true")
 
 
 def _write_csv_export(

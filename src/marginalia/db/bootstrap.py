@@ -44,6 +44,9 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("conversations", "total_cache_read", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "total_cache_read", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "deleted_at", "TIMESTAMP NULL"),
+    ("journal", "invalidated_at", "TIMESTAMP NULL"),
+    ("journal", "invalidated_by_id", "VARCHAR(36) NULL"),
+    ("journal", "invalidated_reason", "TEXT NULL"),
 )
 
 
@@ -149,6 +152,11 @@ QUERY_PERFORMANCE_INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("source_kind", "superseded_by_id", "created_at"),
     ),
     (
+        "ix_journal_invalidated_created",
+        "journal",
+        ("invalidated_at", "created_at"),
+    ),
+    (
         "ix_task_outcomes_lookup_completed",
         "task_outcomes",
         ("task_kind", "object_kind", "object_id", "completed_at"),
@@ -215,6 +223,56 @@ def _ensure_query_performance_indexes(bind) -> None:
             f"CREATE INDEX IF NOT EXISTS {_quote_ident(index_name)} "
             f"ON {_quote_ident(table_name)} ({column_sql})"
         ))
+
+
+def _ensure_postgres_metadata_fts_indexes(bind) -> None:
+    """Add Postgres expression GIN indexes for metadata text search.
+
+    SQLite uses the FTS5 virtual table below. Postgres searches the joined
+    `file_entries` and `files` metadata surfaces directly with to_tsvector,
+    so each side gets its own expression index.
+    """
+    if bind.dialect.name != "postgresql":
+        return
+    inspector = sa.inspect(bind)
+    existing_tables = set(inspector.get_table_names())
+    if "file_entries" in existing_tables:
+        bind.execute(sa.text("""
+            CREATE INDEX IF NOT EXISTS ix_file_entries_metadata_fts_pg
+            ON file_entries USING gin (
+                to_tsvector(
+                    'simple',
+                    COALESCE(display_name, '') || ' ' || COALESCE(extra, '')
+                )
+            )
+            WHERE deleted_at IS NULL
+        """))
+    if "files" in existing_tables:
+        bind.execute(sa.text("""
+            CREATE INDEX IF NOT EXISTS ix_files_metadata_fts_pg
+            ON files USING gin (
+                to_tsvector(
+                    'simple',
+                    COALESCE(summary, '') || ' ' ||
+                    COALESCE(description::text, '') || ' ' ||
+                    COALESCE(extra, '') || ' ' ||
+                    COALESCE(original_ext, '')
+                )
+            )
+            WHERE deleted_at IS NULL
+        """))
+
+
+def _drop_postgres_metadata_fts_indexes(bind) -> None:
+    if bind.dialect.name != "postgresql":
+        return
+    bind.execute(sa.text("DROP INDEX IF EXISTS ix_file_entries_metadata_fts_pg"))
+    bind.execute(sa.text("DROP INDEX IF EXISTS ix_files_metadata_fts_pg"))
+
+
+def _ensure_journal_invalidation(bind) -> None:
+    _apply_additive_columns(bind)
+    _ensure_query_performance_indexes(bind)
 
 
 def _sqlite_supports_metadata_fts(bind) -> bool:
@@ -678,6 +736,8 @@ POST_BASELINE_SHIMS: tuple[tuple[str, Callable[[Any], None]], ...] = (
     ("0008_query_performance_indexes", _ensure_query_performance_indexes),
     ("0009_entry_metadata_fts", _ensure_entry_metadata_fts),
     ("0010_entry_metadata_fts_description", _ensure_entry_metadata_fts_description),
+    ("0011_postgres_metadata_fts", _ensure_postgres_metadata_fts_indexes),
+    ("0012_journal_invalidation", _ensure_journal_invalidation),
 )
 
 ALEMBIC_HEAD_REVISION = POST_BASELINE_SHIMS[-1][0]

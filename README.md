@@ -142,6 +142,18 @@ candidate IDs for batched metadata verification and source reads. Lower-level
 tools such as `search_journal`, `search_metadata`, and `materialize_view`
 remain available for focused follow-up and debugging.
 
+Metadata text search is indexed in both supported database modes. SQLite uses
+the local FTS5 trigram table; Postgres uses native `to_tsvector` /
+`websearch_to_tsquery` expression GIN indexes over file and entry metadata.
+Chinese short terms that are too small for trigram tokenization are preserved
+with a bounded LIKE fallback in mixed metadata queries.
+Journal recall also validates referenced entries at read time. If a prior
+note points at a deleted entry or a file reprocessed after the note was
+written, the note is kept for audit but marked stale and ranked behind current
+notes. Later reflections can also mark directly contradicted journal rows
+`invalidated_*`; active recall hides them by default while audit queries can
+include them.
+
 ## Supported Ingest Pipelines
 
 - `text`: text, Markdown, reStructuredText, code-like text.
@@ -172,6 +184,7 @@ MARGINALIA_HOME=./runtime/eval/scifact marginalia eval import-beir scifact ./dat
 MARGINALIA_HOME=./runtime/eval/scifact EMBEDDING_API_KEY=... marginalia eval build-semantic-index scifact
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval run scifact --retriever search_metadata --k 10,50,100 --json report.json
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval run scifact --retriever semantic_recall --k 10,50,100
+MARGINALIA_HOME=./runtime/eval/scifact marginalia eval ablation-run scifact --k 10,50,100 --json ablation-report.json
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval answer scifact --retriever recall_knowledge --query-id <qid> --timeout-seconds 300
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval answer-run scifact --retriever recall_knowledge --qrels-only --query-limit 20 --concurrency 10 --json answer-report.json
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval compare-report scifact --query-limit 30 --concurrency 3 --json compare-report.json
@@ -201,6 +214,11 @@ defaults to `EVIDENCE_SELECTION=quota`; set `EVIDENCE_SELECTION=rerank` to take
 the reranked top evidence directly.
 The eval report treats `hit@k` and `candidate_recall@k` as the investigation
 candidate-pool metrics; MRR and nDCG are ranking-efficiency diagnostics.
+`eval ablation-run` runs the candidate-pool matrix for metadata-only,
+metadata-plus-relations, hybrid semantic recall, hybrid-plus-relations,
+hybrid-plus-rerank, and full recall. It reports deltas against metadata-only
+so relation expansion, semantic recall, and rerank contributions can be
+tracked before changing the agent loop.
 `eval answer` is a bounded final-answer probe: it retrieves candidates, reads
 limited source text, performs one answer-generation call, and reports whether
 the answer cited a qrels-relevant document. `eval answer-run` repeats the same
@@ -248,11 +266,32 @@ Slash commands:
 /export [conversation_id]     export answer and citations
 /tend                         run a maintenance pass
 /background                   show queued/running tasks
-/mode [quick|deep]            show or change chat mode
+/mode [auto|quick|deep]       show or change chat mode
 /new / /clear / /quit         session control
 ```
 
-Any non-slash input is sent to the investigator agent.
+Any non-slash input is sent to the investigator agent. Chat defaults to
+`auto`: the planner selects a quick/standard/deep execution budget from a
+plain `BUDGET:` control line and the runtime can upgrade it while tools are
+still producing new evidence. `/mode quick` and `/mode deep` remain manual
+overrides.
+
+## MCP Server
+
+Marginalia can also run as a stdio MCP server for external agents:
+
+```bash
+marginalia mcp
+# or
+marginalia-mcp
+```
+
+The MCP surface is read-only. It exposes retrieval and source-reading tools
+such as `recall_knowledge`, `search_metadata`, `search_journal`,
+`read_entries_metadata`, and `read_files`, while write-side and generated
+artifact tools are not exposed. A Claude Desktop-style command entry can point
+at the same executable and set `MARGINALIA_HOME` / database settings through
+the environment.
 
 ## API Surface
 
@@ -275,8 +314,8 @@ GET  /health
 The desktop GUI and CLI both use the same API.
 
 `POST /v1/chat/{session_id}` accepts `{ "query": "...", "mode": "deep" }`
-or `{ "query": "...", "mode": "quick" }`. Omit `mode` for the default deep
-investigation behavior.
+or `{ "query": "...", "mode": "quick" }`. Omit `mode` for the default `auto`
+planner-selected budget behavior.
 
 ## Configuration
 
@@ -288,6 +327,8 @@ DB_BACKEND=sqlite                  # sqlite or postgres
 STORAGE_BACKEND=mirror             # mirror, local, or s3
 WORKER_ENABLED=true
 AUTO_LIFECYCLE_ENABLED=false
+MAINTENANCE_DAILY_TOKEN_BUDGET=0  # rolling 24h background cap; 0 = unlimited
+RELATION_BACKGROUND_VETTING_ENABLED=false
 
 LLM_DEFAULT_PROVIDER=openai        # openai, openai-compatible, anthropic
 LLM_DEFAULT_API_KEY=sk-...
@@ -321,6 +362,16 @@ Use `openai-compatible` for DeepSeek, Together, Groq, local vLLM, Ollama, and ot
 
 The `vision` profile is optional. Without it, image enrichment, PDF figure captioning, and scanned-PDF OCR degrade gracefully or are skipped.
 
+`MAINTENANCE_DAILY_TOKEN_BUDGET` is a rolling 24-hour cap for background
+maintenance LLM usage. When it is exhausted, low-priority speculative tasks
+(`restructure_catalogs`, `vet_relations`, `propose_views`) defer to a later
+tick; foreground ingest and chat reflection are not limited.
+
+Relation discovery is lazy by default. Miners write cheap raw signals, and
+`/discover` vets directly hit unjudged edges on demand before returning them.
+Set `RELATION_BACKGROUND_VETTING_ENABLED=true` only if you want the periodic
+worker to batch-vet relation edges ahead of time.
+
 When a long final answer hits the model token limit, Marginalia can continue it server-side and emit one merged answer event to the GUI. Tune `AGENT_FINAL_ANSWER_CONTINUE_TURNS` and `AGENT_FINAL_ANSWER_MAX_CHARS` for research-heavy deployments.
 
 ## Storage and Deployment
@@ -346,6 +397,8 @@ Remote API mode:
 ```bash
 uvicorn marginalia.main:app --host 0.0.0.0 --port 8000
 marginalia --server http://server:8000
+# If the server sets MARGINALIA_API_TOKEN:
+marginalia --server http://server:8000 --api-token "$MARGINALIA_API_TOKEN"
 ```
 
 Docker compose starts API, worker, Postgres, and MinIO:
@@ -354,6 +407,18 @@ Docker compose starts API, worker, Postgres, and MinIO:
 echo "LLM_DEFAULT_API_KEY=sk-..." > .env
 docker compose up -d
 ```
+
+The compose file binds the API and MinIO console to `127.0.0.1` by default.
+If you deliberately expose the API on a LAN, set `MARGINALIA_API_TOKEN` and
+send `Authorization: Bearer <token>` from the CLI or desktop connection
+settings.
+
+### Multi-device sync
+
+Do not use Dropbox, Syncthing, iCloud Drive, OneDrive, or similar file-sync
+tools to sync a live `MARGINALIA_HOME`. SQLite and the mirror/local storage
+layout can be corrupted by concurrent replication. For multiple machines, use
+the remote deployment shape with Postgres and S3-compatible object storage.
 
 ## Documentation
 
@@ -365,6 +430,7 @@ docker compose up -d
 ## Development
 
 ```bash
+uv run ruff check src tests
 .\.venv\Scripts\python -B -m pytest tests -q
 ```
 

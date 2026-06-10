@@ -24,7 +24,7 @@ Usage from a chat client wrapper (already done in factory.record_chat_use):
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from marginalia.llm.types import TokenUsage
 

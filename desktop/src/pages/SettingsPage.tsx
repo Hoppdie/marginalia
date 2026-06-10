@@ -14,7 +14,13 @@
 import { useEffect, useState } from "react";
 import { Save, Sun, Moon, Monitor, RefreshCw } from "lucide-react";
 
-import { setBaseUrl, getBaseUrl, settings as settingsApi } from "@/api/client";
+import {
+  setApiToken,
+  setBaseUrl,
+  getApiToken,
+  getBaseUrl,
+  settings as settingsApi,
+} from "@/api/client";
 import { LlmProfileEditor } from "@/components/LlmProfileEditor";
 import { usePrefs, type LanguagePreference } from "@/lib/prefs";
 import { useTheme } from "@/lib/theme";
@@ -202,6 +208,7 @@ function ConnectionSection() {
   const [base, setBase] = useState(
     () => localStorage.getItem(STORAGE_KEY) || getBaseUrl(),
   );
+  const [token, setToken] = useState(() => getApiToken());
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   const save = () => {
@@ -209,6 +216,7 @@ function ConnectionSection() {
     if (v) localStorage.setItem(STORAGE_KEY, v);
     else localStorage.removeItem(STORAGE_KEY);
     setBaseUrl(v);
+    setApiToken(token);
     setSavedAt(Date.now());
   };
 
@@ -236,6 +244,15 @@ function ConnectionSection() {
           <Save size={13} /> {t.common.save}
         </button>
       </div>
+      <label className="mt-4 block text-sm font-medium">{t.settings.apiToken}</label>
+      <p className="mt-1 text-xs text-fg-subtle">{t.settings.apiTokenHelp}</p>
+      <input
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        type="password"
+        placeholder={t.settings.apiTokenPlaceholder}
+        className="mt-3 w-full rounded-md border border-border bg-bg-base px-3 py-1.5 font-mono text-sm outline-none focus:border-accent"
+      />
       {savedAt && (
         <p className="mt-2 text-xs text-fg-subtle">
           {t.common.saved} · {new Date(savedAt).toLocaleTimeString()}

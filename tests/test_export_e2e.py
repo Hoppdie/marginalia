@@ -21,15 +21,15 @@ import asyncio
 import io
 import json
 import os
-import shutil
+from uuid import uuid4
+import shlex
 import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_export_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get("MARGINALIA_TEST_TMP", Path(__file__).resolve().parent))
+_TEST_ROOT = _TEST_PARENT / f"_export_e2e_data_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
@@ -323,7 +323,7 @@ async def main():
 
             # explicit conv id
             cli_dest = _TEST_ROOT / "via_cli.zip"
-            await dispatch(ctx, f"/export {seeded['conv_done']} {cli_dest}")
+            await dispatch(ctx, f"/export {seeded['conv_done']} {shlex.quote(str(cli_dest))}")
             assert cli_dest.exists()
             assert cli_dest.stat().st_size > 100
             print("[5] CLI /export with explicit id OK; bytes =",
@@ -331,7 +331,7 @@ async def main():
 
             # markdown destination → single .md file, no zip
             md_dest = _TEST_ROOT / "via_cli.md"
-            await dispatch(ctx, f"/export {seeded['conv_done']} {md_dest}")
+            await dispatch(ctx, f"/export {seeded['conv_done']} {shlex.quote(str(md_dest))}")
             assert md_dest.exists()
             md_text = md_dest.read_text(encoding="utf-8")
             assert "raft.md" in md_text and "Raft note" in md_text

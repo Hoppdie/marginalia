@@ -60,7 +60,6 @@ from marginalia.repositories.task_outcomes import (
     record_outcome,
 )
 from marginalia.tasks.kinds import KIND_RESTRUCTURE_CATALOGS, task_handler
-from marginalia.utils.ids import new_id
 
 log = logging.getLogger(__name__)
 

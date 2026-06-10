@@ -70,7 +70,7 @@ def _lock_for(session_id: str) -> asyncio.Lock:
 
 class ChatBody(BaseModel):
     query: str
-    mode: ChatMode = "deep"
+    mode: ChatMode = "auto"
 
 
 @router.post("/chat/{session_id}")

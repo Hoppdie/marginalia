@@ -53,6 +53,13 @@ through tools with explicit database and file boundaries.
 
 Text search in metadata paths uses compact metadata fields and the local
 metadata search implementation; it is separate from embedding search.
+SQLite uses an FTS5 trigram virtual table over entry/file metadata. Postgres
+uses native `to_tsvector` / `websearch_to_tsquery` expressions backed by GIN
+indexes on `file_entries` and `files`, so remote deployments do not fall back
+to unindexed metadata `ILIKE` scans for normal lexical search. Short CJK terms
+that are too small for trigram tokenization are ORed back into metadata search
+with bounded `LIKE` clauses, preserving Chinese two-character query recall
+without replacing the FTS path.
 Embedding recall is optional and never reuses chat, vision, or ingest keys.
 
 ### 1.2 Capability Boundary
@@ -83,6 +90,10 @@ Rules:
 - `quote` is preferred whenever source text exists.
 - `page` is only for PDF physical pages, not printed page labels guessed from the document body.
 - PDF display links try quote-location first, then fall back to page/page-label mapping.
+- Live display marks quote-bearing footnotes with
+  `quote_status=verified|unverified`; verification checks the cited entry's
+  original readable text with whitespace/punctuation normalization. Failed
+  verification does not remove the answer.
 - Multiple evidence locations require multiple footnotes.
 
 The raw response is persisted; live display rewrites footnotes to entry links.
@@ -226,8 +237,21 @@ Important fields:
 - `source_kind`
 - `superseded_by_id`
 - `summarized_journal_ids`
+- `invalidated_at`
+- `invalidated_by_id`
+- `invalidated_reason`
 
 `reflect_turn` writes per-turn journal entries. `summarize_session` can synthesize longer-lived session insights and supersede older rows.
+Journal rows are not deleted or rewritten when referenced entries change.
+Instead, `search_journal` validates each row's `entry_ids` at recall time:
+missing, soft-deleted, or re-ingested-after-note references are marked stale
+with `validity_note="引用实体已变更"` and downgraded behind current journal
+rows. This keeps the notebook auditable while preventing outdated conclusions
+from dominating future planning.
+When a later `reflect_turn` directly contradicts an active journal row for
+the same entry, it marks the older row `invalidated_*`. Active journal recall
+and stable snapshots hide invalidated rows by default; `search_journal` can
+include them for audit with `include_invalidated=true`.
 
 ### 2.3 Audit/session Layer
 
@@ -332,7 +356,8 @@ Each turn has two LLM phases.
 The planner has no tools. It outputs either:
 
 - `NO_PLAN: ...` for trivial turns, or
-- a plain numbered tool plan for execute.
+- `BUDGET: quick|standard|deep` followed by a plain numbered tool plan for
+  execute.
 
 The plan must not answer from the snapshot.
 
@@ -351,11 +376,11 @@ It can call registered tools and then produce a cited answer.
 
 Execution mode is request-scoped:
 
-- `deep` is the default full ReAct loop and uses the configured execute-turn
-  budget;
-- `quick` still runs the planner, then caps execute to three calls: the first
-  two may call tools, while the third disables tools and must answer from
-  collected evidence.
+- `auto` is the default. The planner chooses quick, standard, or deep using
+  the non-JSON `BUDGET:` control line. The runtime can upgrade the budget when
+  fresh tool results are still arriving and guardrails have not fired.
+- `quick` forces the low budget and does not auto-upgrade.
+- `deep` forces the configured hard execute-turn budget.
 
 Runtime guards:
 
@@ -397,10 +422,25 @@ Important retrieval tools:
 - `search_metadata`: structured candidate narrowing by text, tags, catalog, folder, view, kind, and lifecycle.
 - `read_entries_metadata`: compact metadata, sections, coverage, and related entries.
 - `read_files`: original-source verification by offset, section, heading, line, page, PDF label, paragraph, regex, archive member, or table-aware slice.
-- `query_sql`: DuckDB-backed querying for supported table formats.
+- `query_sql`: DuckDB-backed querying for supported table formats. It loads
+  only the explicitly referenced entries into an in-memory database, then
+  disables DuckDB external access and locks configuration before executing
+  model-authored SQL.
 - `analyze_container`: inspect archive members without fully flattening every possible nested item into the main library.
 
-### 5.1 Optional Semantic Recall and Rerank
+### 5.1 MCP Read-Only Surface
+
+`marginalia mcp` / `marginalia-mcp` runs a stdio MCP server for external
+agents. It reuses the same registered tool schemas and handlers, but exposes
+only read-only retrieval tools: `recall_knowledge`, `read_files`,
+`search_metadata`, `search_journal`, `read_entries_metadata`, `list_folder`,
+`list_catalogs`, `read_catalog`, `resolve_tag`, and `materialize_view`.
+Write-side tools, artifact generators, logs, SQL execution, and archive
+analysis remain internal to the Marginalia agent/API surface unless they are
+explicitly added later. MCP calls use synthetic `mcp-*` tool contexts and do
+not write conversation history or journal memory.
+
+### 5.2 Optional Semantic Recall and Rerank
 
 Semantic recall is opt-in:
 
@@ -434,7 +474,10 @@ order directly.
 
 ## 6. Evidence Discovery
 
-Relation discovery is background work. It reduces online agent loops by surfacing likely neighbours once a seed entry is known.
+Relation discovery is split between cheap background mining and lazy LLM
+vetting. It reduces online agent loops by surfacing likely neighbours once a
+seed entry is known, while deferring expensive pair judgement until a relation
+is actually queried.
 
 Signals:
 
@@ -448,13 +491,19 @@ Pipeline:
 ```text
 mine_relations
   -> entry_relations observations
-  -> vet_relations
+  -> /discover on-demand vetting
   -> vetted entry_relations
   -> services.recommend random walk
   -> /discover and related_entries
 ```
 
-`find_related` uses random walk with restart over the relation graph. Search and metadata surfaces can prefill related entries so the agent does not spend another loop rediscovering obvious neighbours.
+`find_related` uses random walk with restart over the vetted relation graph.
+The `/discover` route first LLM-vets directly hit unjudged seed edges and
+caches the verdict on `entry_relations`. Search and metadata prefill remain
+pure read paths: they use already-vetted edges only and do not trigger LLM
+calls during ordinary browsing. Batch `vet_relations` remains available as an
+optional maintenance task, but periodic dispatch skips it unless
+`RELATION_BACKGROUND_VETTING_ENABLED=true`.
 
 ## 7. Background Task System
 
@@ -500,11 +549,22 @@ compare-report
   -> one-shot RAG report
   -> full ReAct report workflow
   -> blind pairwise judge, with gold labels prioritized when available
+
+ablation-run
+  -> candidate-pool component matrix
+  -> metadata-only, relation expansion, semantic recall, rerank, and full recall
+  -> per-configuration deltas against the metadata-only baseline
 ```
 
 External BEIR-style datasets are imported as normal file entries. Import runs
 ingest synchronously and supports `--concurrency` and `--resume`. Semantic
 index builds also support batched concurrent embedding requests and resume.
+The ablation matrix currently measures retrieval candidate-pool behavior; the
+plan-phase comparison remains the `compare-report` one-shot RAG vs full
+plan/execute report workflow. This keeps component claims bounded to the
+specific eval layer that produced them.
+Regression coverage also includes a tiny CJK BEIR-style path for short-term
+metadata queries; it is a correctness guard, not a benchmark-quality score.
 
 Current local SciFact validation:
 
@@ -539,6 +599,12 @@ marginalia storage migrate --from local --to mirror
 ```
 
 S3 is intended for Postgres-backed deployments.
+
+Live multi-device use should not be implemented by file-syncing
+`MARGINALIA_HOME`. SQLite plus mirror/local object files are safe to back up
+after Marginalia is stopped, but concurrent replication tools can corrupt the
+database or split file/database state. Multi-device deployments use Postgres
+plus S3-compatible object storage.
 
 ## 10. Lifecycle
 
@@ -596,7 +662,10 @@ CLI or desktop
   -> Postgres + S3 or shared storage
 ```
 
-Docker compose starts API, worker, Postgres, and MinIO.
+Remote API deployments can set `MARGINALIA_API_TOKEN`; when present, all
+routes except `/health` and CORS preflight require `Authorization: Bearer`.
+Docker compose starts API, worker, Postgres, and MinIO, and binds published
+ports to `127.0.0.1` by default.
 
 ## 13. Release Pipeline
 

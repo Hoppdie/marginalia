@@ -20,14 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
+from uuid import uuid4
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_user_files_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get("MARGINALIA_TEST_TMP", Path(__file__).resolve().parent))
+_TEST_ROOT = _TEST_PARENT / f"_user_files_e2e_data_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
@@ -223,7 +223,7 @@ async def main():
             print("[8] CLI /info OK")
 
             local_dest = _TEST_ROOT / "downloaded.md"
-            await dispatch(ctx, f"/download {seeded['e_a']} {local_dest}")
+            await dispatch(ctx, f"/download {seeded['e_a']} {shlex.quote(str(local_dest))}")
             assert local_dest.exists()
             assert local_dest.read_bytes() == seeded["body_a"]
             print("[8] CLI /download OK; written", local_dest.stat().st_size, "bytes")
@@ -251,7 +251,7 @@ async def main():
 
             # ---- 10. /download falls back to folder mode on entry miss --
             zip_dest2 = _TEST_ROOT / "via_cli.zip"
-            await dispatch(ctx, f"/download {seeded['folder_llm']} {zip_dest2}")
+            await dispatch(ctx, f"/download {seeded['folder_llm']} {shlex.quote(str(zip_dest2))}")
             assert zip_dest2.exists()
             with zipfile.ZipFile(zip_dest2, "r") as zf:
                 assert "raft.md" in zf.namelist()

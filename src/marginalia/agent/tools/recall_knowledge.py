@@ -287,6 +287,10 @@ def _merge_notes(
                 "created_at": note.get("created_at"),
                 "matched_by": [],
             }
+            if "entry_validity" in note:
+                existing["entry_validity"] = note.get("entry_validity")
+            if "validity_note" in note:
+                existing["validity_note"] = note.get("validity_note")
             note_map[note_id] = existing
         _append_unique(existing["matched_by"], source)
 
@@ -824,7 +828,15 @@ def _candidate_entry_ids(
             _append_unique(out, str(entry_id))
             if len(out) >= limit:
                 return out
-    for note in notes:
+    current_notes = [
+        note for note in notes
+        if note.get("entry_validity", {}).get("status") != "stale"
+    ]
+    stale_notes = [
+        note for note in notes
+        if note.get("entry_validity", {}).get("status") == "stale"
+    ]
+    for note in current_notes + stale_notes:
         for entry_id in note.get("entry_ids") or []:
             _append_unique(out, str(entry_id))
             if len(out) >= limit:

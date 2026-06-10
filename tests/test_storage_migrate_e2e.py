@@ -15,14 +15,13 @@ Verifies that:
 """
 from __future__ import annotations
 
-import asyncio
 import os
-import shutil
+from uuid import uuid4
+import asyncio
 from pathlib import Path
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_storage_migrate_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get("MARGINALIA_TEST_TMP", Path(__file__).resolve().parent))
+_TEST_ROOT = _TEST_PARENT / f"_storage_migrate_e2e_data_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
 
 # Start with local backend; we'll swap mid-test.

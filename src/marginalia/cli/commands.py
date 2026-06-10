@@ -9,17 +9,18 @@ via the @command decorator. Help text is its docstring's first line.
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, MutableMapping, cast
+from typing import Awaitable, Callable, MutableMapping, cast
 
+from marginalia.agent.types import ChatMode
 from marginalia.cli.client import CliHttpError, MarginaliaClient
 from marginalia.cli.render import (
     CYAN,
     DIM,
     RESET,
     Spinner,
-    print_markdown,
     render_markdown,
     short_duration,
 )
@@ -32,7 +33,7 @@ class CliContext:
     session_id: str | None = None
     cwd_remote: str = "/"  # for resolving relative remote paths
     history: list[dict] = field(default_factory=list)
-    chat_mode: Literal["deep", "quick"] = "deep"
+    chat_mode: ChatMode = "auto"
     storage_backend: str = "?"  # filled from /health at startup
     # Tab-completion caches. Populated as a side effect of user commands
     # (search/ls/info/discover) — completion only suggests entries the
@@ -99,6 +100,32 @@ def _split_first(arg_str: str) -> tuple[str, str]:
     return parts[0], parts[1].strip()
 
 
+def _split_first_arg(arg_str: str) -> tuple[str, str]:
+    parts = _split_args(arg_str)
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:]).strip()
+
+
+def _split_args(arg_str: str) -> list[str]:
+    arg_str = arg_str.strip()
+    if not arg_str:
+        return []
+    try:
+        parts = shlex.split(arg_str, posix=False)
+    except ValueError:
+        parts = arg_str.split()
+    return [_strip_matching_quotes(part) for part in parts]
+
+
+def _strip_matching_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
 # ---- command implementations ----------------------------------------------
 
 @command("help")
@@ -114,15 +141,15 @@ async def cmd_help(ctx: CliContext, args: str) -> None:
 
 @command("mode")
 async def cmd_mode(ctx: CliContext, args: str) -> None:
-    """/mode [quick|deep] - show or change the chat investigation mode."""
+    """/mode [auto|quick|deep] - show or change the chat investigation mode."""
     value = args.strip().lower()
     if not value:
         print(f"current chat mode: {ctx.chat_mode}")
         return
-    if value not in {"quick", "deep"}:
-        print("usage: /mode quick|deep")
+    if value not in {"auto", "quick", "deep"}:
+        print("usage: /mode auto|quick|deep")
         return
-    ctx.chat_mode = cast(Literal["deep", "quick"], value)
+    ctx.chat_mode = cast(ChatMode, value)
     print(f"chat mode set to {ctx.chat_mode}")
 
 
@@ -269,7 +296,7 @@ async def cmd_upload(ctx: CliContext, args: str) -> None:
       - trailing '/'         folder; display_name = local basename
       - includes a '.' (ext) folder + filename (display_name = last segment)
     Quote any path containing spaces (both local and remote)."""
-    local, remote = _split_first(args)
+    local, remote = _split_first_arg(args)
     if not local or not remote:
         print('usage: /upload <local_path> <remote_path>')
         print('  remote_path: trailing "/" = folder; with extension = filename')
@@ -402,7 +429,7 @@ async def cmd_discover(ctx: CliContext, args: str) -> None:
     has confirmed are real. Pass --all to walk the unvetted graph too
     (useful for inspecting raw miner output before the /tend cycle has
     vetted it)."""
-    parts = args.strip().split()
+    parts = _split_args(args)
     if not parts:
         print("usage: /discover <entry_id> [top_k=8] [--all]")
         return
@@ -459,7 +486,7 @@ async def cmd_export(ctx: CliContext, args: str) -> None:
       2. server's GET /conversations/latest (most recent ended conversation)
       3. error message if neither exists
     """
-    parts = args.strip().split()
+    parts = _split_args(args)
     conv_id: str | None = None
     dest_str: str | None = None
     if parts:
@@ -508,7 +535,7 @@ async def cmd_export(ctx: CliContext, args: str) -> None:
 @command("download")
 async def cmd_download(ctx: CliContext, args: str) -> None:
     """/download <entry_id|folder_id> [<local_path>]  — file → bytes; folder → zip."""
-    parts = args.strip().split()
+    parts = _split_args(args)
     if not parts:
         print("usage: /download <entry_id|folder_id> [<local_path>] [--folder]")
         return
@@ -541,60 +568,6 @@ async def cmd_download(ctx: CliContext, args: str) -> None:
             print(f"saved {out['bytes_written']:,} bytes -> {out['saved_to']}")
             return
 
-    dest = Path(dest_str) if dest_str else Path.cwd() / f"{target_id[:8]}.zip"
-    if dest.is_dir():
-        dest = dest / f"{target_id[:8]}.zip"
-    try:
-        out = await ctx.client.download_folder(target_id, dest=dest)
-    except CliHttpError as e:
-        print(f"folder download failed: HTTP {e.status} {e.payload}")
-        return
-    print(
-        f"saved zip ({out['member_count']} files, "
-        f"{out['bytes_written']:,} bytes) -> {out['saved_to']}"
-    )
-    """/download <entry_id|folder_id> [<local_path>]  — file → bytes; folder → zip.
-
-    The id is tried as an entry first; on 404 we fall back to folder
-    download (zip). Pass `--folder` to skip the entry attempt and force
-    folder mode.
-    """
-    parts = args.strip().split()
-    if not parts:
-        print("usage: /download <entry_id|folder_id> [<local_path>] [--folder]")
-        return
-
-    force_folder = False
-    if "--folder" in parts:
-        force_folder = True
-        parts = [p for p in parts if p != "--folder"]
-    if not parts:
-        print("missing id")
-        return
-
-    target_id = parts[0]
-    dest_str = parts[1] if len(parts) > 1 else None
-
-    # Try entry first unless --folder was passed
-    if not force_folder:
-        try:
-            meta = await ctx.client.get_entry_metadata(target_id)
-        except CliHttpError as e:
-            meta = None
-            if e.status != 404:
-                print(f"download failed: HTTP {e.status} {e.payload}")
-                return
-        if meta is not None:
-            dest = Path(dest_str) if dest_str else Path.cwd() / meta["display_name"]
-            try:
-                out = await ctx.client.download_entry(target_id, dest=dest)
-            except CliHttpError as e:
-                print(f"download failed: HTTP {e.status} {e.payload}")
-                return
-            print(f"saved {out['bytes_written']:,} bytes -> {out['saved_to']}")
-            return
-
-    # Fall back to folder zip
     dest = Path(dest_str) if dest_str else Path.cwd() / f"{target_id[:8]}.zip"
     if dest.is_dir():
         dest = dest / f"{target_id[:8]}.zip"
@@ -719,6 +692,32 @@ def _format_metrics(done_payload: dict, tool_count: int) -> str:
     return "(" + " · ".join(parts) + ")"
 
 
+def _plan_text_and_budget(data: str) -> tuple[str, dict | None]:
+    try:
+        payload = json.loads(data)
+    except (ValueError, TypeError):
+        return data, None
+    if not isinstance(payload, dict):
+        return data, None
+    text = payload.get("text")
+    budget = payload.get("budget")
+    return (
+        text if isinstance(text, str) else data,
+        budget if isinstance(budget, dict) else None,
+    )
+
+
+def _format_budget_label(budget: dict | None) -> str | None:
+    if not budget:
+        return None
+    tier = str(budget.get("tier") or "?")
+    limit = budget.get("limit")
+    mode = str(budget.get("mode") or "auto")
+    if isinstance(limit, int):
+        return f"{mode} budget: {tier} ({limit} rounds)"
+    return f"{mode} budget: {tier}"
+
+
 async def chat(ctx: CliContext, message: str) -> None:
     """Forward a non-slash message to the agent and render the SSE stream.
 
@@ -766,7 +765,7 @@ async def chat(ctx: CliContext, message: str) -> None:
             elif ev.event_type == "planning":
                 pass
             elif ev.event_type == "plan":
-                plan_text = ev.data
+                plan_text, budget = _plan_text_and_budget(ev.data)
                 # NO_PLAN fast-path: planner declared this turn trivial. Keep
                 # the running spinner; the next event is `answer` which we
                 # commit at the end. No verbose plan dump.
@@ -778,13 +777,25 @@ async def chat(ctx: CliContext, message: str) -> None:
                     sp.finish("planning ready")
                 if plan_text.strip():
                     print()
+                    budget_label = _format_budget_label(budget)
+                    if budget_label:
+                        print(f"  {CYAN}{budget_label}{RESET}")
                     print(f"  {CYAN}Plan:{RESET}")
                     for ln in plan_text.strip().split("\n"):
                         print(f"    {DIM}{ln}{RESET}")
                     print()
                 sp = Spinner("investigator working...").start()
             elif ev.event_type == "thinking":
-                _swap("investigator thinking...")
+                try:
+                    thinking = json.loads(ev.data)
+                except (ValueError, TypeError):
+                    thinking = {}
+                if isinstance(thinking, dict) and thinking.get("budget_upgraded"):
+                    limit = thinking.get("limit")
+                    tier = thinking.get("budget_tier")
+                    _swap(f"budget upgraded to {tier} ({limit} rounds)")
+                else:
+                    _swap("investigator thinking...")
             elif ev.event_type == "tool_call":
                 tool_count += 1
                 try:

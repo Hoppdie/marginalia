@@ -7,6 +7,7 @@ instead of writing inline `select()` statements.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -34,6 +35,9 @@ from marginalia.db.models import EntryTag, File, FileEntry, TaskOutcome
 ACTIVE_LIFECYCLES = ("active", "manual_active")
 _MIN_TRIGRAM_FTS_TERM_LEN = 3
 _ENTRY_METADATA_FTS = table(ENTRY_METADATA_FTS_TABLE, column("entry_id"))
+_POSTGRES_TEXT_SEARCH_CONFIG = literal_column("'simple'")
+_SQL_EMPTY_TEXT = literal_column("''")
+_SQL_SPACE_TEXT = literal_column("' '")
 _METADATA_FTS_STOPWORDS = {
     "about",
     "after",
@@ -51,6 +55,13 @@ _METADATA_FTS_STOPWORDS = {
     "this",
     "with",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _MetadataTextSearch:
+    dialect: str
+    fts_query: str
+    like_terms: tuple[str, ...] = ()
 
 
 def _folder_clause(folder_id: str | None):
@@ -120,17 +131,71 @@ def _clean_metadata_fts_term(term: str) -> str:
     return term.replace("\x00", " ").strip(" \t\r\n.,;:!?()[]{}\"'")
 
 
+def _metadata_like_terms(terms: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        clean = _clean_metadata_fts_term(term)
+        if not clean:
+            continue
+        key = clean.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return out
+
+
+def _metadata_short_cjk_like_terms(terms: list[str]) -> list[str]:
+    return [
+        term
+        for term in _metadata_like_terms(terms)
+        if len(term) < _MIN_TRIGRAM_FTS_TERM_LEN and _contains_cjk(term)
+    ]
+
+
+def _contains_cjk(term: str) -> bool:
+    return any(
+        "\u3400" <= ch <= "\u4dbf"
+        or "\u4e00" <= ch <= "\u9fff"
+        or "\uf900" <= ch <= "\ufaff"
+        for ch in term
+    )
+
+
 def _quote_fts_phrase(term: str) -> str:
     return '"' + term.replace('"', '""') + '"'
 
 
+def _metadata_like_clauses(terms: Sequence[str]):
+    clauses = []
+    for term in _metadata_like_terms(list(terms)):
+        like = f"%{term}%"
+        clauses.extend((
+            File.summary.ilike(like),
+            cast(File.description, String).ilike(like),
+            File.extra.ilike(like),
+            File.original_ext.ilike(like),
+            FileEntry.extra.ilike(like),
+            FileEntry.display_name.ilike(like),
+        ))
+    return clauses
+
+
 async def _metadata_fts_query(
     db: AsyncSession, text: str | Sequence[str] | None,
-) -> str | None:
-    query = _metadata_fts_query_from_terms(_text_terms(text))
+) -> _MetadataTextSearch | None:
+    terms = _text_terms(text)
+    query = _metadata_fts_query_from_terms(terms)
     if query is None:
         return None
-    if db.bind is None or db.bind.dialect.name != "sqlite":
+    if db.bind is None:
+        return None
+    dialect = db.bind.dialect.name
+    like_terms = tuple(_metadata_short_cjk_like_terms(terms))
+    if dialect == "postgresql":
+        return _MetadataTextSearch(dialect="postgresql", fts_query=query, like_terms=like_terms)
+    if dialect != "sqlite":
         return None
     try:
         exists = (
@@ -144,34 +209,106 @@ async def _metadata_fts_query(
         ).scalar_one_or_none()
     except Exception:
         return None
-    return query if exists else None
-
-
-def _apply_metadata_fts_filter(stmt, fts_query: str):
-    subquery = (
-        select(_ENTRY_METADATA_FTS.c.entry_id)
-        .where(
-            literal_column(ENTRY_METADATA_FTS_TABLE).op("MATCH")(
-                bindparam("metadata_fts_query", fts_query)
-            )
-        )
-    )
-    return stmt.where(FileEntry.id.in_(subquery))
-
-
-def _apply_metadata_fts_join(stmt, fts_query: str):
     return (
-        stmt.join(_ENTRY_METADATA_FTS, _ENTRY_METADATA_FTS.c.entry_id == FileEntry.id)
-        .where(
-            literal_column(ENTRY_METADATA_FTS_TABLE).op("MATCH")(
-                bindparam("metadata_fts_query", fts_query)
-            )
-        )
+        _MetadataTextSearch(dialect="sqlite", fts_query=query, like_terms=like_terms)
+        if exists
+        else None
     )
 
 
-def _metadata_fts_rank():
+def _apply_metadata_fts_filter(stmt, search: _MetadataTextSearch):
+    return stmt.where(_metadata_fts_filter_clause(search))
+
+
+def _apply_metadata_fts_join(stmt, search: _MetadataTextSearch):
+    if search.dialect == "sqlite":
+        stmt = stmt.join(_ENTRY_METADATA_FTS, _ENTRY_METADATA_FTS.c.entry_id == FileEntry.id)
+    return stmt.where(_metadata_fts_join_clause(search))
+
+
+def _metadata_fts_ordering(search: _MetadataTextSearch):
+    rank = _metadata_fts_rank(search)
+    if search.dialect == "postgresql":
+        return rank.desc()
+    return rank
+
+
+def _sqlite_mixed_fts_like_search(search: _MetadataTextSearch) -> bool:
+    return search.dialect == "sqlite" and bool(search.like_terms)
+
+
+def _metadata_fts_rank(search: _MetadataTextSearch):
+    if search.dialect == "postgresql":
+        tsquery = _postgres_metadata_tsquery(search)
+        return (
+            func.ts_rank_cd(_postgres_entry_metadata_tsvector(), tsquery)
+            + func.ts_rank_cd(_postgres_file_metadata_tsvector(), tsquery)
+        )
     return literal_column(f"bm25({ENTRY_METADATA_FTS_TABLE})")
+
+
+def _metadata_fts_filter_clause(search: _MetadataTextSearch):
+    clauses = []
+    if search.dialect == "sqlite":
+        clauses.append(FileEntry.id.in_(
+            select(_ENTRY_METADATA_FTS.c.entry_id).where(_sqlite_metadata_match(search))
+        ))
+    elif search.dialect == "postgresql":
+        clauses.append(_postgres_metadata_match(search))
+    clauses.extend(_metadata_like_clauses(search.like_terms))
+    return or_(*clauses) if len(clauses) > 1 else clauses[0]
+
+
+def _metadata_fts_join_clause(search: _MetadataTextSearch):
+    clauses = []
+    if search.dialect == "sqlite":
+        clauses.append(_sqlite_metadata_match(search))
+    elif search.dialect == "postgresql":
+        clauses.append(_postgres_metadata_match(search))
+    clauses.extend(_metadata_like_clauses(search.like_terms))
+    return or_(*clauses) if len(clauses) > 1 else clauses[0]
+
+
+def _sqlite_metadata_match(search: _MetadataTextSearch):
+    return literal_column(ENTRY_METADATA_FTS_TABLE).op("MATCH")(
+        bindparam("metadata_fts_query", search.fts_query)
+    )
+
+
+def _postgres_metadata_match(search: _MetadataTextSearch):
+    tsquery = _postgres_metadata_tsquery(search)
+    return or_(
+        _postgres_entry_metadata_tsvector().op("@@")(tsquery),
+        _postgres_file_metadata_tsvector().op("@@")(tsquery),
+    )
+
+
+def _postgres_metadata_tsquery(search: _MetadataTextSearch):
+    return func.websearch_to_tsquery(
+        _POSTGRES_TEXT_SEARCH_CONFIG,
+        bindparam("metadata_fts_query", search.fts_query),
+    )
+
+
+def _postgres_entry_metadata_tsvector():
+    return func.to_tsvector(
+        _POSTGRES_TEXT_SEARCH_CONFIG,
+        _concat_text(FileEntry.display_name, FileEntry.extra),
+    )
+
+
+def _postgres_file_metadata_tsvector():
+    return func.to_tsvector(
+        _POSTGRES_TEXT_SEARCH_CONFIG,
+        _concat_text(File.summary, cast(File.description, String), File.extra, File.original_ext),
+    )
+
+
+def _concat_text(*values):
+    expr = func.coalesce(cast(values[0], String), _SQL_EMPTY_TEXT)
+    for value in values[1:]:
+        expr = expr + _SQL_SPACE_TEXT + func.coalesce(cast(value, String), _SQL_EMPTY_TEXT)
+    return expr
 
 
 async def list_live_in_folder(
@@ -261,17 +398,13 @@ async def search_with_file(
             _live_file(),
         )
     )
-    fts_query = await _metadata_fts_query(db, like.strip("%"))
-    if fts_query is not None:
-        stmt = _apply_metadata_fts_filter(stmt, fts_query)
+    metadata_search = await _metadata_fts_query(db, like.strip("%"))
+    if metadata_search is not None:
+        stmt = _apply_metadata_fts_filter(stmt, metadata_search)
     else:
-        stmt = stmt.where(
-            or_(
-                FileEntry.display_name.ilike(like),
-                File.summary.ilike(like),
-                File.original_ext.ilike(like),
-            )
-        )
+        clauses = _metadata_like_clauses([like.strip("%")])
+        if clauses:
+            stmt = stmt.where(or_(*clauses))
     rows = (
         await db.execute(
             stmt.order_by(FileEntry.updated_at.desc()).limit(limit)
@@ -365,19 +498,11 @@ def _build_filtered_stmt(
         stmt = stmt.where(FileEntry.lifecycle.in_(lifecycle))
     if kind:
         stmt = stmt.where(File.kind == kind)
-    text_terms = _text_terms(text)
+    text_terms = _metadata_like_terms(_text_terms(text))
     if text_terms:
-        clauses = []
-        for term in text_terms:
-            like = f"%{term}%"
-            clauses.extend((
-                File.summary.ilike(like),
-                cast(File.description, String).ilike(like),
-                File.extra.ilike(like),
-                FileEntry.extra.ilike(like),
-                FileEntry.display_name.ilike(like),
-            ))
-        stmt = stmt.where(or_(*clauses))
+        clauses = _metadata_like_clauses(text_terms)
+        if clauses:
+            stmt = stmt.where(or_(*clauses))
     if catalog_one is not None:
         stmt = stmt.where(FileEntry.catalog_id == catalog_one)
     elif catalog_in is not None:
@@ -421,10 +546,10 @@ async def search_filtered(
     `materialize_view`. All filters are conjunctive; an unset filter is a
     no-op. tag filters resolve through EntryTag subqueries. Pair with
     `count_filtered` for total-count pagination."""
-    fts_query = await _metadata_fts_query(db, text)
+    metadata_search = await _metadata_fts_query(db, text)
     base = select(FileEntry, File).join(File, File.id == FileEntry.file_id)
     stmt, empty = _build_filtered_stmt(
-        text=None if fts_query is not None else text,
+        text=None if metadata_search is not None else text,
         lifecycle=lifecycle, kind=kind,
         catalog_one=catalog_one, catalog_in=catalog_in,
         folder_one=folder_one, folder_in=folder_in,
@@ -433,9 +558,16 @@ async def search_filtered(
     )
     if empty:
         return []
-    if fts_query is not None:
-        stmt = _apply_metadata_fts_join(stmt, fts_query)
-        stmt = stmt.order_by(_metadata_fts_rank(), FileEntry.updated_at.desc())
+    if metadata_search is not None:
+        if _sqlite_mixed_fts_like_search(metadata_search):
+            stmt = _apply_metadata_fts_filter(stmt, metadata_search)
+            stmt = stmt.order_by(FileEntry.updated_at.desc())
+        else:
+            stmt = _apply_metadata_fts_join(stmt, metadata_search)
+            stmt = stmt.order_by(
+                _metadata_fts_ordering(metadata_search),
+                FileEntry.updated_at.desc(),
+            )
     else:
         stmt = stmt.order_by(FileEntry.updated_at.desc())
     if offset:
@@ -464,12 +596,12 @@ async def count_filtered(
     """Total rows that would match `search_filtered` with the same filters,
     ignoring limit/offset. Used to populate `total` / `has_more` in the
     pagination contract."""
-    fts_query = await _metadata_fts_query(db, text)
+    metadata_search = await _metadata_fts_query(db, text)
     base = select(func.count()).select_from(
         FileEntry.__table__.join(File.__table__, File.id == FileEntry.file_id)
     )
     stmt, empty = _build_filtered_stmt(
-        text=None if fts_query is not None else text,
+        text=None if metadata_search is not None else text,
         lifecycle=lifecycle, kind=kind,
         catalog_one=catalog_one, catalog_in=catalog_in,
         folder_one=folder_one, folder_in=folder_in,
@@ -478,8 +610,8 @@ async def count_filtered(
     )
     if empty:
         return 0
-    if fts_query is not None:
-        stmt = _apply_metadata_fts_filter(stmt, fts_query)
+    if metadata_search is not None:
+        stmt = _apply_metadata_fts_filter(stmt, metadata_search)
     return int((await db.execute(stmt)).scalar_one())
 
 
@@ -640,6 +772,39 @@ async def list_by_ids_any(
         )
     ).scalars().all()
     return list(rows)
+
+
+async def list_journal_reference_statuses(
+    db: AsyncSession, entry_ids: list[str],
+) -> dict[str, dict[str, datetime | None]]:
+    """Return liveness/freshness fields for journal `entry_ids`.
+
+    Journal rows deliberately keep historical references in JSON. Recall-time
+    validation needs to distinguish current references from missing,
+    soft-deleted, or reprocessed sources without filtering the journal row out.
+    """
+    if not entry_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                FileEntry.id,
+                FileEntry.deleted_at,
+                File.deleted_at,
+                File.ingested_at,
+            )
+            .join(File, File.id == FileEntry.file_id)
+            .where(FileEntry.id.in_(entry_ids))
+        )
+    ).all()
+    return {
+        entry_id: {
+            "entry_deleted_at": entry_deleted_at,
+            "file_deleted_at": file_deleted_at,
+            "file_ingested_at": file_ingested_at,
+        }
+        for entry_id, entry_deleted_at, file_deleted_at, file_ingested_at in rows
+    }
 
 
 async def list_live_with_file_by_ids(

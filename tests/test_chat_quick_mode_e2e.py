@@ -345,3 +345,117 @@ async def test_quick_mode_repairs_tool_call_on_final_answer_round() -> None:
     assert done["llm_calls"] == 6
     assert done["tool_calls"] == 3
     assert done["truncated"] is False
+
+
+async def test_auto_mode_uses_planner_budget_and_upgrades_on_new_evidence() -> None:
+    tool = _CountingTool()
+    _install_tool(tool)
+    chat = _ScriptedChat([
+        ChatResponse(
+            text=(
+                "BUDGET: quick\n"
+                "1. Gather a few candidate facts.\n"
+                "2. Continue only if the early reads keep producing evidence.\n"
+                "Session name: Auto budget"
+            ),
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=100, output_tokens=20),
+            parsed_json=None,
+        ),
+        ChatResponse(
+            text=None,
+            tool_calls=[ToolCall(id="call_1", name=tool.name, arguments={"q": "one"})],
+            stop_reason="tool_use",
+            usage=TokenUsage(input_tokens=150, output_tokens=25),
+            parsed_json=None,
+        ),
+        ChatResponse(
+            text=None,
+            tool_calls=[ToolCall(id="call_2", name=tool.name, arguments={"q": "two"})],
+            stop_reason="tool_use",
+            usage=TokenUsage(input_tokens=180, output_tokens=25),
+            parsed_json=None,
+        ),
+        ChatResponse(
+            text=None,
+            tool_calls=[ToolCall(id="call_3", name=tool.name, arguments={"q": "three"})],
+            stop_reason="tool_use",
+            usage=TokenUsage(input_tokens=190, output_tokens=25),
+            parsed_json=None,
+        ),
+        ChatResponse(
+            text=None,
+            tool_calls=[ToolCall(id="call_4", name=tool.name, arguments={"q": "four"})],
+            stop_reason="tool_use",
+            usage=TokenUsage(input_tokens=200, output_tokens=25),
+            parsed_json=None,
+        ),
+        ChatResponse(
+            text="Auto answer after upgrade.",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=220, output_tokens=30),
+            parsed_json=None,
+        ),
+    ])
+    _install_chat(chat)
+
+    transport = ASGITransport(app=app)
+    list_body = None
+    messages_body = None
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            created = await c.post(
+                "/v1/sessions",
+                json={"initiating_user_message": "auto budget test"},
+            )
+            assert created.status_code == 201, created.text
+            session_id = created.json()["session_id"]
+
+            events = await _consume_sse(
+                c,
+                f"/v1/chat/{session_id}",
+                json_body={"query": "answer with auto budget"},
+            )
+            listed = await c.get("/v1/sessions")
+            assert listed.status_code == 200, listed.text
+            list_body = listed.json()
+            messages = await c.get(f"/v1/sessions/{session_id}/messages")
+            assert messages.status_code == 200, messages.text
+            messages_body = messages.json()
+
+    plan_payload = json.loads(next(e["data"] for e in events if e["event"] == "plan"))
+    assert plan_payload["text"] == (
+        "Gather a few candidate facts.\n"
+        "Continue only if the early reads keep producing evidence."
+    )
+    assert plan_payload["budget"]["tier"] == "quick"
+    assert plan_payload["budget"]["limit"] == runtime.QUICK_EXECUTE_MAX_TURNS
+
+    thinking = [
+        json.loads(event["data"])
+        for event in events
+        if event["event"] == "thinking"
+    ]
+    assert [item["limit"] for item in thinking] == [4, 4, 4, 8, 8]
+    assert thinking[3]["budget_upgraded"] is True
+    assert thinking[3]["previous_limit"] == 4
+    assert thinking[3]["budget_tier"] == "standard"
+    assert [item["mode"] for item in thinking] == ["auto"] * 5
+
+    assert tool.call_count == 4
+    answer = next(event["data"] for event in events if event["event"] == "answer")
+    assert "Auto answer after upgrade" in answer
+    done = json.loads(next(event["data"] for event in events if event["event"] == "done"))
+    assert done["mode"] == "auto"
+    assert done["budget"]["initial_tier"] == "quick"
+    assert done["budget"]["tier"] == "standard"
+    assert done["budget"]["upgrades"] == 1
+    assert done["tool_calls"] == 4
+    assert done["truncated"] is False
+
+    row = next(row for row in list_body["sessions"] if row["session_id"] == session_id)
+    assert row["mode"] == "auto"
+    assert messages_body["mode"] == "auto"
+    assert messages_body["turns"][0]["mode"] == "auto"

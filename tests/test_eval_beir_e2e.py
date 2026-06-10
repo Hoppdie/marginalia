@@ -162,9 +162,28 @@ async def test_import_beir_runs_ingest_and_eval_metrics(
     assert result.hit_rate[1] == 1.0
     assert result.mrr == 1.0
 
+    ablation = await eval_core.run_eval_ablation_dataset(
+        name="tiny",
+        k_values=[1, 2],
+    )
+    ablation_dict = eval_core.ablation_run_to_dict(ablation)
+    ablation_text = eval_core.format_ablation_run_result(ablation)
+    config_names = [row["config"]["name"] for row in ablation.runs]
+    assert config_names == [
+        "metadata_only",
+        "metadata_plus_relations",
+        "hybrid_no_rerank",
+        "hybrid_plus_relations",
+        "hybrid_plus_rerank",
+        "full_recall",
+    ]
+    assert ablation_dict["runs"][0]["result"]["recall"]["1"] == 1.0
+    assert ablation_dict["runs"][0]["config"]["plan_phase"] is False
+    assert "candidate_recall@2" in ablation_text
+    assert "full_recall" in ablation_text
+
     monkeypatch.setattr(
-        eval_core,
-        "get_chat_client",
+        "marginalia.eval.prompts.get_chat_client",
         lambda profile="chat": _FakeAnswerClient(),
     )
     answer = await eval_core.run_answer_probe(
@@ -211,3 +230,75 @@ async def test_import_beir_runs_ingest_and_eval_metrics(
     assert qrels_only.queries_evaluated == 1
     assert qrels_only.queries_skipped == 0
     assert qrels_only.concurrency == 2
+
+
+@pytest.mark.asyncio
+async def test_import_beir_runs_cjk_short_term_eval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home-cjk"
+    monkeypatch.setenv("MARGINALIA_HOME", str(home))
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("WORKER_ENABLED", "false")
+    monkeypatch.setenv("LLM_DEFAULT_API_KEY", "sk-fake")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "fake-model")
+
+    from marginalia.config import get_settings
+    from marginalia.db.engine import dispose_engine
+    from marginalia.storage import reset_storage_cache
+
+    get_settings.cache_clear()  # type: ignore[attr-defined]
+    reset_storage_cache()
+    await dispose_engine()
+
+    import marginalia.pipelines.text as text_pipeline
+
+    monkeypatch.setattr(
+        text_pipeline,
+        "get_chat_client",
+        lambda profile="ingest": _FakeIngestClient(),
+    )
+
+    source = tmp_path / "cjk-beir"
+    (source / "qrels").mkdir(parents=True)
+    _write_jsonl(
+        source / "corpus.jsonl",
+        [
+            {
+                "_id": "zh1",
+                "title": "数据治理",
+                "text": "这份资料讨论数据治理模型和指标体系。",
+            },
+            {
+                "_id": "en1",
+                "title": "Transformer notes",
+                "text": "Transformer architecture overview without the Chinese keyword.",
+            },
+        ],
+    )
+    _write_jsonl(
+        source / "queries.jsonl",
+        [{"_id": "zq1", "text": "transformer 数据"}],
+    )
+    (source / "qrels" / "test.tsv").write_text(
+        "query-id\tcorpus-id\tscore\nzq1\tzh1\t1\n",
+        encoding="utf-8",
+    )
+
+    import marginalia.eval.core as eval_core
+
+    imported = await eval_core.import_beir_dataset(
+        name="cjk-tiny",
+        source_dir=source,
+        progress_every=0,
+    )
+    assert imported.docs_imported == 2
+
+    result = await eval_core.run_eval_dataset(
+        name="cjk-tiny",
+        retriever="search_metadata",
+        k_values=[2],
+    )
+    assert result.queries_evaluated == 1
+    assert result.recall[2] == 1.0, result.per_query

@@ -19,17 +19,23 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import io
 import os
 import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_duckdb_tools_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get(
+    "MARGINALIA_TEST_TMP",
+    str(Path(__file__).resolve().parent),
+))
+_TEST_PARENT.mkdir(parents=True, exist_ok=True)
+_TEST_ROOT = _TEST_PARENT / f"_duckdb_tools_e2e_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
+atexit.register(lambda: shutil.rmtree(_TEST_ROOT, ignore_errors=True))
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["WORKER_ENABLED"] = "false"
@@ -197,6 +203,22 @@ async def main():
     assert any("name" in f.lower() for f in r["column_fixes"])
     print("[6b] column fuzzy match:", r["column_fixes"])
 
+    external_csv = _TEST_ROOT / "external.csv"
+    external_csv.write_text("secret\nleak\n", encoding="utf-8")
+    external_sql = str(external_csv).replace("\\", "/")
+    for blocked_sql in (
+        f"SELECT * FROM '{external_sql}'",
+        f"SELECT * FROM parquet_scan('{external_sql}')",
+        f"SELECT * FROM glob('{external_sql}')",
+    ):
+        r = await _call("query_sql", {
+            "entry_ids": [seeded["e_csv"]],
+            "sql": blocked_sql,
+        })
+        assert r["ok"] is False, r
+        assert "dangerous function" not in r.get("error", "").lower(), r
+    print("[6c] external DuckDB access rejected by engine")
+
     r = await _call("query_sql", {
         "entry_ids": [seeded["e_csv"][:8]],
         "sql": "SELECT name, role FROM t1 ORDER BY name",
@@ -210,7 +232,7 @@ async def main():
     assert exported.startswith("name,role")
     assert "alice,engineer" in exported
     assert r["__user_only__"]["kind"] == "data_export"
-    print("[6c] csv export:", export_path.name)
+    print("[6d] csv export:", export_path.name)
 
     # ---- query_log -----------------------------------------------------
     r = await _call("query_log", {

@@ -166,8 +166,23 @@ async def test_search_journal_entry_id_uses_prefix_resolution(
         assert raw == "0123abcd"
         return full_id, None
 
+    async def fake_statuses(db: Any, entry_ids: list[str]) -> dict[str, dict]:
+        assert entry_ids == [full_id]
+        return {
+            full_id: {
+                "entry_deleted_at": None,
+                "file_deleted_at": None,
+                "file_ingested_at": None,
+            }
+        }
+
     monkeypatch.setattr(mod.journal_repo, "search", fake_search)
     monkeypatch.setattr(mod.entries_repo, "resolve_entry_id_prefix", fake_resolve)
+    monkeypatch.setattr(
+        mod.entries_repo,
+        "list_journal_reference_statuses",
+        fake_statuses,
+    )
 
     result = await mod.search_journal(
         None,

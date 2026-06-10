@@ -43,6 +43,9 @@ jobs:
       - name: Sync deps (locked)
         run: uv sync --locked --extra dev
 
+      - name: Run lint
+        run: uv run ruff check src tests
+
       - name: Run tests
         run: uv run pytest tests/ -v
 

@@ -33,7 +33,7 @@ interface ChatSessionState {
 export const useChatSession = create<ChatSessionState>((set) => ({
   sessionId: null,
   turns: [],
-  chatMode: "deep",
+  chatMode: "auto",
   streaming: false,
   loading: false,
   setSessionId: (id) => set({ sessionId: id }),
@@ -48,7 +48,7 @@ export const useChatSession = create<ChatSessionState>((set) => ({
     set({
       sessionId: null,
       turns: [],
-      chatMode: "deep",
+      chatMode: "auto",
       streaming: false,
       loading: false,
     }),

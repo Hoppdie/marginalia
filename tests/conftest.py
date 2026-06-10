@@ -15,7 +15,10 @@ import asyncio
 import importlib
 import inspect
 import os
+import shutil
+import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -64,16 +67,157 @@ _PATCH_TARGETS: dict[str, tuple[str, ...]] = {
 }
 _PATCH_BASELINE: dict[tuple[str, str], object] = {}
 _SETTINGS_MODEL_CONFIG_BASELINE: dict[str, Any] | None = None
+_TESTS_ROOT = Path(__file__).resolve().parent
+_EXTERNAL_TESTS_ROOT = (
+    Path(os.environ["MARGINALIA_TEST_TMP"]).resolve()
+    if os.environ.get("MARGINALIA_TEST_TMP")
+    else None
+)
+_RETRY_DELAYS_SECONDS = (0.05, 0.15, 0.35)
+_ORIGINAL_RMTREE = shutil.rmtree
 
 
 @pytest.fixture(autouse=True, scope="module")
 def _bootstrap_e2e_schema(request: pytest.FixtureRequest) -> Iterator[None]:
     _restore_module_test_state(request.module)
+    module_home = _module_test_home(request.module)
     fn = getattr(request.module, "_create_schema", None)
     if fn is not None:
         asyncio.run(fn())
-    yield
-    _restore_module_test_state(request.module)
+    try:
+        yield
+    finally:
+        _restore_module_test_state(request.module)
+        if module_home is not None:
+            remove_test_tree(module_home)
+
+
+def remove_test_tree(path: str | os.PathLike[str]) -> None:
+    """Remove an e2e temp tree with retries for Windows file-handle lag."""
+    target = Path(path).resolve()
+    if not _is_managed_test_tree(target) or not target.exists():
+        return
+    try:
+        Path.cwd().resolve().relative_to(target)
+    except ValueError:
+        pass
+    else:
+        os.chdir(_TESTS_ROOT.parent)
+    last_error: OSError | None = None
+    for delay in (0.0, *_RETRY_DELAYS_SECONDS):
+        if delay:
+            time.sleep(delay)
+        _relax_tree_permissions(target)
+        try:
+            _ORIGINAL_RMTREE(target)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+
+
+def _module_test_home(module: Any) -> Path | None:
+    raw = getattr(module, "_TEST_ROOT", None)
+    if raw is None:
+        raw = os.environ.get("MARGINALIA_HOME")
+    if raw is None:
+        return None
+    try:
+        target = Path(raw).resolve()
+    except OSError:
+        return None
+    return target if _is_managed_test_tree(target) else None
+
+
+def _is_managed_test_tree(path: Path) -> bool:
+    roots = [_TESTS_ROOT]
+    if _EXTERNAL_TESTS_ROOT is not None:
+        roots.append(_EXTERNAL_TESTS_ROOT)
+    for root in roots:
+        try:
+            path.relative_to(root)
+            break
+        except ValueError:
+            continue
+    else:
+        return False
+    name = path.name
+    return (
+        name == "_e2e_data"
+        or name.endswith("_e2e_data")
+        or "_e2e_" in name
+    )
+
+
+def _retrying_test_rmtree(
+    path,
+    ignore_errors: bool = False,
+    onerror=None,
+    *,
+    onexc=None,
+    dir_fd=None,
+):
+    try:
+        target = Path(path).resolve()
+    except OSError:
+        return _ORIGINAL_RMTREE(
+            path,
+            ignore_errors=ignore_errors,
+            onerror=onerror,
+            onexc=onexc,
+            dir_fd=dir_fd,
+        )
+    if dir_fd is not None or not _is_managed_test_tree(target):
+        return _ORIGINAL_RMTREE(
+            path,
+            ignore_errors=ignore_errors,
+            onerror=onerror,
+            onexc=onexc,
+            dir_fd=dir_fd,
+        )
+    try:
+        Path.cwd().resolve().relative_to(target)
+    except ValueError:
+        pass
+    else:
+        os.chdir(_TESTS_ROOT.parent)
+    last_error: OSError | None = None
+    for delay in (0.0, *_RETRY_DELAYS_SECONDS):
+        if delay:
+            time.sleep(delay)
+        _relax_tree_permissions(target)
+        try:
+            return _ORIGINAL_RMTREE(
+                target,
+                ignore_errors=ignore_errors,
+                onerror=onerror,
+                onexc=onexc,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            last_error = exc
+    if ignore_errors:
+        return None
+    if last_error is not None:
+        raise last_error
+    return None
+
+
+shutil.rmtree = _retrying_test_rmtree
+
+
+def _relax_tree_permissions(target: Path) -> None:
+    if not target.exists():
+        return
+    for p in (target, *target.rglob("*")):
+        try:
+            p.chmod(0o700)
+        except OSError:
+            pass
 
 
 def pytest_pycollect_makeitem(collector: pytest.Collector, name: str, obj: Any):
@@ -132,7 +276,7 @@ def _remember_module_env(module: Any) -> None:
         for key, value in os.environ.items()
         if key.startswith(_ENV_PREFIXES)
     }
-    setattr(module, "__pytest_env_snapshot__", snapshot)
+    module.__pytest_env_snapshot__ = snapshot
 
 
 def _restore_module_test_state(module: Any) -> None:

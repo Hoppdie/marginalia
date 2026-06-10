@@ -16,12 +16,21 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import os
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import uuid4
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_settings_routes_e2e_data"
-_TEST_ROOT.mkdir(parents=True, exist_ok=True)
+_TEST_PARENT = Path(os.environ.get(
+    "MARGINALIA_TEST_TMP",
+    str(Path(__file__).resolve().parent),
+))
+_TEST_PARENT.mkdir(parents=True, exist_ok=True)
+_TEST_ROOT = _TEST_PARENT / f"_settings_routes_e2e_{os.getpid()}_{uuid4().hex[:8]}"
+_TEST_ROOT.mkdir(parents=True)
+atexit.register(lambda: shutil.rmtree(_TEST_ROOT, ignore_errors=True))
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["WORKER_ENABLED"] = "false"
@@ -97,6 +106,8 @@ def _ensure_test_env() -> None:
     os.environ["LLM_DEFAULT_MODEL"] = "settings-default-model"
     os.environ["LLM_DEFAULT_PROVIDER"] = "openai"
     os.environ.pop("LLM_DEFAULT_BASE_URL", None)
+    os.environ.pop("MARGINALIA_API_TOKEN", None)
+    os.environ.pop("RELATION_BACKGROUND_VETTING_ENABLED", None)
     for var in (
         "EMBEDDING_PROVIDER",
         "EMBEDDING_API_KEY",
@@ -150,6 +161,37 @@ async def _create_schema() -> None:
     return None
 
 
+async def test_optional_bearer_auth() -> None:
+    _ensure_test_env()
+    os.environ["MARGINALIA_API_TOKEN"] = "test-token"
+    get_settings.cache_clear()  # type: ignore[attr-defined]
+    transport = ASGITransport(app=app)
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                r = await c.get("/health")
+                assert r.status_code == 200, r.text
+
+                r = await c.get("/v1/settings/server")
+                assert r.status_code == 401, r.text
+
+                r = await c.get(
+                    "/v1/settings/server",
+                    headers={"Authorization": "Bearer wrong"},
+                )
+                assert r.status_code == 401, r.text
+
+                r = await c.get(
+                    "/v1/settings/server",
+                    headers={"Authorization": "Bearer test-token"},
+                )
+                assert r.status_code == 200, r.text
+        print("[0] optional bearer auth gates v1 routes and exempts /health")
+    finally:
+        os.environ.pop("MARGINALIA_API_TOKEN", None)
+        get_settings.cache_clear()  # type: ignore[attr-defined]
+
+
 async def test_server_snapshot_no_secrets() -> None:
     _ensure_test_env()
     transport = ASGITransport(app=app)
@@ -161,6 +203,8 @@ async def test_server_snapshot_no_secrets() -> None:
             assert body["storage_backend"] == "local"
             assert body["worker_enabled"] is False
             assert body["auto_lifecycle_enabled"] is False
+            assert body["maintenance_daily_token_budget"] >= 0
+            assert body["relation_background_vetting_enabled"] is False
             assert body["default_on_conflict"] in ("rename", "error", "skip")
             assert body["worker_batch_size"] >= 1
             assert body["llm_ingest_concurrency"] >= 1
@@ -224,6 +268,8 @@ async def test_put_writes_overlay_and_invalidates_cache() -> None:
                         "agent_final_answer_max_chars": 180000,
                         "worker_batch_size": 3,
                         "llm_ingest_concurrency": 6,
+                        "maintenance_daily_token_budget": 123456,
+                        "relation_background_vetting_enabled": True,
                         "embedding_provider": "dashscope",
                         "embedding_api_key": "emb-secret-XXXX",
                         "embedding_base_url": "https://emb.example.test/v1",
@@ -252,6 +298,8 @@ async def test_put_writes_overlay_and_invalidates_cache() -> None:
             assert body["overlay"]["agent_final_answer_max_chars"] == 180000
             assert body["overlay"]["worker_batch_size"] == 3
             assert body["overlay"]["llm_ingest_concurrency"] == 6
+            assert body["overlay"]["maintenance_daily_token_budget"] == 123456
+            assert body["overlay"]["relation_background_vetting_enabled"] is True
             assert body["overlay"]["embedding_provider"] == "dashscope"
             assert body["overlay"]["embedding_api_key"] != "emb-secret-XXXX"
             assert "***" in body["overlay"]["embedding_api_key"]
@@ -284,6 +332,8 @@ async def test_put_writes_overlay_and_invalidates_cache() -> None:
             assert s.agent_final_answer_max_chars == 180000
             assert s.worker_batch_size == 3
             assert s.llm_ingest_concurrency == 6
+            assert s.maintenance_daily_token_budget == 123456
+            assert s.relation_background_vetting_enabled is True
             assert s.embedding_provider == "dashscope"
             assert s.embedding_api_key == "emb-secret-XXXX"
             assert s.embedding_base_url == "https://emb.example.test/v1"

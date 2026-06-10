@@ -380,7 +380,6 @@ def render_table(rows: list[str]) -> str:
     and let glowpy handle layout."""
     if not rows:
         return ""
-    md = "\n".join(rows)
     # glowpy/markdown-it requires a separator row to recognise a table;
     # synthesise one from the first row's column count when missing.
     first = rows[0].strip()

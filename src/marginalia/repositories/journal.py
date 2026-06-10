@@ -5,7 +5,7 @@ Caller owns the transaction.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ async def search(
     kinds: Sequence[str],
     conversation_id: str | None,
     include_superseded: bool,
+    include_invalidated: bool,
     text: str | Sequence[str] | None,
     order: str,
     limit: int,
@@ -36,6 +37,8 @@ async def search(
         stmt = stmt.where(Journal.conversation_id == conversation_id)
     if not include_superseded:
         stmt = stmt.where(Journal.superseded_by_id.is_(None))
+    if not include_invalidated:
+        stmt = stmt.where(Journal.invalidated_at.is_(None))
     text_terms = _text_terms(text)
     if text_terms:
         stmt = stmt.where(or_(
@@ -77,6 +80,7 @@ async def recent_journal_for_snapshot(
             select(Journal)
             .where(
                 Journal.superseded_by_id.is_(None),
+                Journal.invalidated_at.is_(None),
                 Journal.created_at < before,
             )
             .order_by(Journal.created_at.desc())
@@ -100,6 +104,7 @@ async def list_reflect_rows_for_session(
             .where(
                 Conversation.session_id == session_id,
                 Journal.source_kind == "reflect_turn",
+                Journal.invalidated_at.is_(None),
             )
             .order_by(Journal.created_at.asc())
             .limit(limit)
@@ -119,6 +124,7 @@ async def list_entry_id_lists_for_conversations(
         await db.execute(
             select(Journal.entry_ids)
             .where(Journal.conversation_id.in_(conversation_ids))
+            .where(Journal.invalidated_at.is_(None))
         )
     ).scalars().all()
     return [list(r or []) for r in rows]
@@ -137,6 +143,7 @@ async def list_active_insights_recent(
             .where(
                 Journal.source_kind == "insight",
                 Journal.superseded_by_id.is_(None),
+                Journal.invalidated_at.is_(None),
             )
             .order_by(Journal.created_at.desc())
             .limit(limit)
@@ -158,6 +165,7 @@ async def filter_active_insight_ids(
                 Journal.id.in_(candidate_ids),
                 Journal.source_kind == "insight",
                 Journal.superseded_by_id.is_(None),
+                Journal.invalidated_at.is_(None),
             )
         )
     ).scalars().all()
@@ -175,6 +183,73 @@ async def mark_superseded(
         .where(Journal.id.in_(ids))
         .values(superseded_by_id=by_id)
     )
+
+
+async def list_active_related_recent(
+    db: AsyncSession,
+    *,
+    entry_ids: Sequence[str],
+    before: datetime | None = None,
+    limit: int,
+) -> list[Journal]:
+    """Recent active rows mentioning any of `entry_ids`, newest first.
+
+    JSON-array overlap is kept in Python so this behaves consistently on
+    SQLite and Postgres.
+    """
+    wanted = {str(entry_id) for entry_id in entry_ids if entry_id}
+    if not wanted:
+        return []
+    stmt = (
+        select(Journal)
+        .where(
+            Journal.superseded_by_id.is_(None),
+            Journal.invalidated_at.is_(None),
+        )
+        .order_by(Journal.created_at.desc())
+        .limit(max(limit * 8, 40))
+    )
+    if before is not None:
+        stmt = stmt.where(Journal.created_at < before)
+    rows = (await db.execute(stmt)).scalars().all()
+    out: list[Journal] = []
+    for row in rows:
+        row_ids = {str(entry_id) for entry_id in row.entry_ids or [] if entry_id}
+        if wanted.intersection(row_ids):
+            out.append(row)
+            if len(out) >= limit:
+                break
+    return out
+
+
+async def mark_invalidated(
+    db: AsyncSession,
+    invalidations: Mapping[str, str],
+    *,
+    by_id: str,
+    at: datetime,
+) -> int:
+    """Mark active journal rows invalidated by a newer row.
+
+    Returns the number of rows actually updated.
+    """
+    changed = 0
+    for journal_id, reason in invalidations.items():
+        result = await db.execute(
+            update(Journal)
+            .where(
+                Journal.id == journal_id,
+                Journal.superseded_by_id.is_(None),
+                Journal.invalidated_at.is_(None),
+            )
+            .values(
+                invalidated_at=at,
+                invalidated_by_id=by_id,
+                invalidated_reason=(reason or "").strip() or None,
+            )
+        )
+        changed += int(result.rowcount or 0)
+    return changed
 
 
 async def reflect_per_session_with_max(
@@ -197,6 +272,7 @@ async def reflect_per_session_with_max(
             )
             .join(Journal, Journal.conversation_id == Conversation.id)
             .where(Journal.source_kind == "reflect_turn")
+            .where(Journal.invalidated_at.is_(None))
             .group_by(Conversation.session_id)
             .having(func.count(Journal.id) >= min_count)
             .having(func.max(Journal.created_at) <= max_newest)
@@ -217,6 +293,7 @@ async def list_recent_with_hints(
             select(Journal.note, Journal.entry_ids, Journal.tags,
                    Journal.created_at)
             .where(Journal.created_at >= cutoff)
+            .where(Journal.invalidated_at.is_(None))
             .order_by(Journal.created_at.desc())
             .limit(limit)
         )
@@ -234,6 +311,7 @@ async def list_id_entry_ids_note_created(
             select(Journal.id, Journal.entry_ids, Journal.note,
                    Journal.created_at)
             .where(Journal.created_at >= cutoff)
+            .where(Journal.invalidated_at.is_(None))
             .order_by(Journal.created_at.desc())
         )
     ).all()
@@ -249,6 +327,7 @@ async def list_entry_id_arrays_since(
     rows = (
         await db.execute(
             select(Journal.entry_ids).where(Journal.created_at >= cutoff)
+            .where(Journal.invalidated_at.is_(None))
         )
     ).scalars().all()
     return [list(r or []) for r in rows]

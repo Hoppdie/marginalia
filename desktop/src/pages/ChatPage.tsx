@@ -13,12 +13,13 @@
  *  a fresh session lazily on first send.
  */
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Send, Square, Sparkles, Zap } from "lucide-react";
+import { Gauge, Send, Square, Sparkles, Zap } from "lucide-react";
 
 import { sessions } from "@/api/client";
 import { streamChat } from "@/api/chatStream";
 import type {
-  ChatEvent, ChatMode, ReplayedTurn, ReplayedToolCall, ThinkingEventData,
+  ChatEvent, ChatMode, PlanBudgetData, ReplayedTurn, ReplayedToolCall,
+  ThinkingEventData,
 } from "@/types/api";
 import { TurnView, type Turn, type Step } from "@/components/TurnView";
 import { SessionList } from "@/components/SessionList";
@@ -274,6 +275,21 @@ export function ChatPage() {
             >
               <button
                 type="button"
+                title={i18n.chat.autoModeHint}
+                disabled={streaming}
+                onClick={() => setChatMode("auto")}
+                className={cn(
+                  "flex h-8 w-16 items-center justify-center gap-1 rounded-[4px] text-xs transition-colors",
+                  chatMode === "auto"
+                    ? "bg-accent text-accent-fg"
+                    : "text-fg-muted hover:bg-bg-muted",
+                  streaming && "cursor-not-allowed opacity-60",
+                )}
+              >
+                <Gauge size={13} /> {i18n.chat.autoMode}
+              </button>
+              <button
+                type="button"
                 title={i18n.chat.quickModeHint}
                 disabled={streaming}
                 onClick={() => setChatMode("quick")}
@@ -394,11 +410,17 @@ function applyEventToTurnList(
       case "planning":
         return appendStep(turn, "planning", t.chat.planning);
       case "plan": {
-        const noPlan = noPlanBody(ev.data);
+        const text = planText(ev.data);
+        const noPlan = noPlanBody(text);
         if (noPlan !== null) {
           return appendStep(turn, "plan", t.chat.noPlan, { plan: [noPlan] });
         }
-        return appendStep(turn, "plan", t.chat.planReady, { plan: planLines(ev.data) });
+        return appendStep(
+          turn,
+          "plan",
+          t.chat.planReady,
+          { plan: planLinesWithBudget(text, planBudget(ev.data), t) },
+        );
       }
       case "thinking":
         return appendStep(
@@ -485,19 +507,64 @@ function thinkingLabel(data: unknown, t: I18nStrings): string {
   if (!Number.isFinite(limit) || limit <= 0) {
     return `${t.chat.thinking} (${round})`;
   }
+  if (d.budget_upgraded) {
+    const tier = d.budget_tier ? budgetTierLabel(d.budget_tier, t) : "";
+    return tier
+      ? `${t.chat.thinking} (${round}/${limit}, ${t.chat.budgetUpgraded(tier)})`
+      : `${t.chat.thinking} (${round}/${limit}, ${t.chat.budgetUpgradedShort})`;
+  }
   return `${t.chat.thinking} (${round}/${limit})`;
 }
 
 function noPlanBody(data: unknown): string | null {
-  if (typeof data !== "string") return null;
-  const text = data.trim();
+  const text = typeof data === "string" ? data.trim() : "";
   if (!text.startsWith("NO_PLAN:")) return null;
   return text.slice("NO_PLAN:".length).trim();
+}
+
+function planText(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (data && typeof data === "object") {
+    const text = (data as { text?: unknown }).text;
+    if (typeof text === "string") return text;
+  }
+  return "";
+}
+
+function planBudget(data: unknown): PlanBudgetData | null {
+  if (!data || typeof data !== "object") return null;
+  const budget = (data as { budget?: unknown }).budget;
+  return budget && typeof budget === "object" ? budget as PlanBudgetData : null;
 }
 
 function planLines(data: unknown): string[] {
   const text = typeof data === "string" ? data.trim() : "";
   return text.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+function planLinesWithBudget(
+  text: string,
+  budget: PlanBudgetData | null,
+  t: I18nStrings,
+): string[] {
+  const lines = planLines(text);
+  const budgetLine = budgetLabel(budget, t);
+  return budgetLine ? [budgetLine, ...lines] : lines;
+}
+
+function budgetLabel(budget: PlanBudgetData | null, t: I18nStrings): string | null {
+  if (!budget?.tier) return null;
+  const limit = Number(budget.limit);
+  const tier = budgetTierLabel(budget.tier, t);
+  return Number.isFinite(limit) && limit > 0
+    ? t.chat.budgetPicked(tier, limit)
+    : t.chat.budgetPickedNoLimit(tier);
+}
+
+function budgetTierLabel(tier: string, t: I18nStrings): string {
+  if (tier === "quick") return t.chat.quickMode;
+  if (tier === "deep") return t.chat.deepMode;
+  return t.chat.standardMode;
 }
 
 // Map a server-replayed turn into the in-flight `Turn` shape so the
@@ -534,9 +601,9 @@ function replayedToTurn(rt: ReplayedTurn, t: I18nStrings): Turn {
 function inferTranscriptMode(turns: ReplayedTurn[]): ChatMode {
   for (let i = turns.length - 1; i >= 0; i--) {
     const mode = turns[i].mode;
-    if (mode === "quick" || mode === "deep") return mode;
+    if (mode === "auto" || mode === "quick" || mode === "deep") return mode;
   }
-  return "deep";
+  return "auto";
 }
 
 function replayedToolCallStep(tc: ReplayedToolCall, t: I18nStrings): Step {

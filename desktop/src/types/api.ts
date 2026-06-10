@@ -235,7 +235,7 @@ export interface RecentTasks {
 }
 
 export type OnConflict = "rename" | "error" | "skip";
-export type ChatMode = "deep" | "quick";
+export type ChatMode = "auto" | "deep" | "quick";
 
 /** SSE event names emitted by POST /v1/chat/{session_id}.
  *  Order in a typical turn: conversation → planning → plan → thinking
@@ -262,8 +262,19 @@ export interface ConversationEventData {
   conversation_id: string;
 }
 
+export interface PlanBudgetData {
+  mode?: ChatMode;
+  tier?: "quick" | "standard" | "deep";
+  initial_tier?: "quick" | "standard" | "deep";
+  limit?: number;
+  hard_limit?: number;
+  source?: string;
+  upgrades?: number;
+}
+
 export interface PlanEventData {
-  steps: string[];
+  text?: string;
+  budget?: PlanBudgetData;
 }
 
 export interface ThinkingEventData {
@@ -271,6 +282,12 @@ export interface ThinkingEventData {
   limit?: number;
   final_continuation?: boolean;
   mode?: ChatMode;
+  budget_tier?: "quick" | "standard" | "deep";
+  budget_initial_tier?: "quick" | "standard" | "deep";
+  budget_upgrades?: number;
+  budget_upgraded?: boolean;
+  previous_limit?: number;
+  hard_limit?: number;
   force_final_answer?: boolean;
 }
 

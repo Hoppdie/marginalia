@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Optional API bearer authentication via `MARGINALIA_API_TOKEN`, with CLI and
+  desktop client support for sending the token.
+- Auto chat mode now defaults new turns to planner-selected quick/standard/deep
+  execution budgets, with visible budget upgrade notices when fresh evidence
+  justifies continuing.
+- `marginalia eval ablation-run` for candidate-pool component attribution
+  across metadata, relation expansion, semantic recall, rerank, and full
+  recall configurations.
+- `marginalia mcp` / `marginalia-mcp` stdio server exposing the read-only
+  retrieval tool set to MCP-capable clients.
+- Python linting baseline with `ruff check src tests` in CI.
+- Postgres metadata search now uses native text-search expressions with GIN
+  indexes, and eval coverage now includes a tiny CJK short-term dataset path.
+- Journal recall now annotates stale entry references caused by deletion or
+  reprocessing, downgrades stale notes behind current notes, and hides rows
+  invalidated by later contradictory reflections.
+- `MAINTENANCE_DAILY_TOKEN_BUDGET` can cap rolling 24-hour background
+  maintenance LLM usage and defer low-priority speculative tasks when spent.
+- Relation discovery now vets directly hit unjudged edges lazily during
+  `/discover`; periodic batch `vet_relations` is opt-in via
+  `RELATION_BACKGROUND_VETTING_ENABLED`.
+- Citation display now marks quote-bearing footnotes as
+  `quote_status=verified` or `quote_status=unverified` after checking the
+  cited entry's original readable text with whitespace/punctuation
+  normalization.
+
+### Changed
+
+- Split the eval implementation into dataset, retrieval, metrics, reporting,
+  prompt, and probe modules while keeping `marginalia.eval.core` as the
+  compatibility import path.
+
+### Fixed
+
+- `query_sql` now disables DuckDB external access before executing
+  model-authored SQL, blocking path-literal, scan-function, and glob-style
+  local file reads outside the loaded entries.
+- E2E test temp directories are cleaned with a retrying Windows-aware helper.
+- Docker compose now binds API and MinIO ports to localhost by default.
+- OCR PDF VLM readback no longer counts PDF pages synchronously on the async
+  read path.
+- Mixed metadata queries keep short CJK terms via LIKE fallback instead of
+  silently dropping them from trigram FTS.
+
+### Documentation
+
+- Documented API token use, compose localhost binding, and the known risk of
+  syncing a live `MARGINALIA_HOME` with file replication tools.
+
 ## 0.2.3 - 2026-06-05
 
 ### Added

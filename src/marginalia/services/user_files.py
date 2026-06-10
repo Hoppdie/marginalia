@@ -112,7 +112,12 @@ async def _related_entries_for(
     for them, which is what cuts the loop count we'd otherwise spend on
     "search → see one match → search again for siblings"."""
     from marginalia.services.recommend import find_related as _walk
-    rows = await _walk(session, seed_entry_id=entry_id, top_k=top_k)
+    rows = await _walk(
+        session,
+        seed_entry_id=entry_id,
+        top_k=top_k,
+        lazy_vet=False,
+    )
     return [
         {
             "entry_id": r.entry_id,

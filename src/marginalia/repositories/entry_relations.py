@@ -263,6 +263,84 @@ async def list_vet_candidates(
     ]
 
 
+async def list_direct_unvetted_candidates(
+    db: AsyncSession,
+    *,
+    entry_id: str,
+    min_obs: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Unvetted relation candidates directly touching `entry_id`.
+
+    Used by lazy discovery: when a user asks for neighbours of a seed entry,
+    vet the seed's strongest fresh edges on demand instead of waiting for the
+    batch background task to judge the whole graph.
+    """
+    from sqlalchemy.orm import aliased
+    FA = aliased(FileEntry, name="fa")
+    FB = aliased(FileEntry, name="fb")
+    FilA = aliased(File, name="filA")
+    FilB = aliased(File, name="filB")
+    rows = (
+        await db.execute(
+            select(
+                EntryRelation.id,
+                EntryRelation.entry_a_id,
+                EntryRelation.entry_b_id,
+                EntryRelation.observation_count,
+                EntryRelation.note,
+                EntryRelation.source_kind,
+                FA.display_name.label("a_name"),
+                FB.display_name.label("b_name"),
+                FilA.summary.label("a_summary"),
+                FilB.summary.label("b_summary"),
+                FilA.kind.label("a_kind"),
+                FilB.kind.label("b_kind"),
+            )
+            .select_from(EntryRelation)
+            .join(FA, FA.id == EntryRelation.entry_a_id)
+            .join(FB, FB.id == EntryRelation.entry_b_id)
+            .join(FilA, FilA.id == FA.file_id)
+            .join(FilB, FilB.id == FB.file_id)
+            .where(
+                or_(
+                    EntryRelation.entry_a_id == entry_id,
+                    EntryRelation.entry_b_id == entry_id,
+                ),
+                EntryRelation.vetted.is_(None),
+                EntryRelation.observation_count >= min_obs,
+                FA.deleted_at.is_(None),
+                FB.deleted_at.is_(None),
+                FilA.summary.is_not(None),
+                FilB.summary.is_not(None),
+            )
+            .order_by(
+                EntryRelation.observation_count.desc(),
+                EntryRelation.last_observed_at.desc(),
+            )
+            .limit(limit)
+        )
+    ).all()
+    return [
+        {
+            "pair_id": r[0],
+            "relation_id": r[0],
+            "entry_a_id": r[1],
+            "entry_b_id": r[2],
+            "observation_count": r[3],
+            "note": r[4],
+            "source_kind": r[5],
+            "a_name": r[6],
+            "b_name": r[7],
+            "a_summary": r[8],
+            "b_summary": r[9],
+            "a_kind": r[10],
+            "b_kind": r[11],
+        }
+        for r in rows
+    ]
+
+
 async def list_pair_keys(db: AsyncSession) -> list[tuple[str, str]]:
     """`(entry_a_id, entry_b_id)` for every relation row. Used by
     mine_corpus_evidence to skip pairs already linked."""

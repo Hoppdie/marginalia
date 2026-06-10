@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from hmac import compare_digest
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 import marginalia.tasks.handlers  # noqa: F401  (registers task handlers)
 from marginalia.api.routes_agent import router as sessions_router
@@ -146,6 +148,26 @@ app.add_middleware(
         "X-Member-Count",
     ],
 )
+
+
+@app.middleware("http")
+async def optional_bearer_auth(request: Request, call_next):
+    token = get_settings().marginalia_api_token
+    if (
+        not token
+        or request.method == "OPTIONS"
+        or request.url.path == "/health"
+    ):
+        return await call_next(request)
+    auth = request.headers.get("authorization", "")
+    prefix = "Bearer "
+    if not auth.startswith(prefix) or not compare_digest(auth[len(prefix):], token):
+        return JSONResponse(
+            {"detail": "missing or invalid bearer token"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
 
 V1_PREFIX = "/v1"
 app.include_router(folders_router, prefix=V1_PREFIX)

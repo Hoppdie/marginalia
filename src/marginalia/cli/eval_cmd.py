@@ -8,15 +8,18 @@ from pathlib import Path
 
 from marginalia.db.engine import dispose_engine
 from marginalia.eval.core import (
+    ablation_run_to_dict,
     answer_probe_to_dict,
     answer_run_to_dict,
     build_eval_semantic_index,
+    format_ablation_run_result,
     format_report_compare_result,
     format_answer_run_result,
     format_answer_probe_result,
     format_run_result,
     import_beir_dataset,
     report_compare_to_dict,
+    run_eval_ablation_dataset,
     result_to_dict,
     run_answer_eval_dataset,
     run_answer_probe,
@@ -106,6 +109,24 @@ def cmd_eval_main(argv: list[str]) -> int:
     )
     p_run.add_argument("--query-limit", type=int, default=None)
     p_run.add_argument(
+        "--json",
+        dest="json_path",
+        default=None,
+        help="Optional path to write the full JSON report.",
+    )
+
+    p_ablation = sub.add_parser(
+        "ablation-run",
+        help="Run retrieval component ablations for an imported dataset.",
+    )
+    p_ablation.add_argument("name", help="Dataset name under MARGINALIA_HOME/eval/")
+    p_ablation.add_argument(
+        "--k",
+        default="10,50,100",
+        help="Comma-separated candidate cutoffs, default: 10,50,100",
+    )
+    p_ablation.add_argument("--query-limit", type=int, default=None)
+    p_ablation.add_argument(
         "--json",
         dest="json_path",
         default=None,
@@ -318,6 +339,8 @@ def cmd_eval_main(argv: list[str]) -> int:
             return asyncio.run(_run_build_semantic_index(args))
         if args.cmd == "run":
             return asyncio.run(_run_eval(args))
+        if args.cmd == "ablation-run":
+            return asyncio.run(_run_ablation_eval(args))
         if args.cmd == "answer":
             return asyncio.run(_run_answer(args))
         if args.cmd == "answer-run":
@@ -402,6 +425,32 @@ async def _run_eval(args: argparse.Namespace) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
             json.dumps(result_to_dict(result), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"\njson_report: {out}")
+    return 0
+
+
+async def _run_ablation_eval(args: argparse.Namespace) -> int:
+    try:
+        k_values = _parse_k_values(args.k)
+        result = await run_eval_ablation_dataset(
+            name=args.name,
+            k_values=k_values,
+            query_limit=args.query_limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"eval ablation-run failed: {exc}")
+        return 1
+    finally:
+        await dispose_engine()
+
+    print(format_ablation_run_result(result))
+    if args.json_path:
+        out = Path(args.json_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(ablation_run_to_dict(result), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         print(f"\njson_report: {out}")

@@ -52,6 +52,7 @@ HISTORY_PATH = Path.home() / ".marginalia_history"
 EMBEDDED_BASE_URL = "http://embedded"
 EMBEDDED_MARKER = "embedded"
 ENV_SERVER = "MARGINALIA_SERVER"
+ENV_API_TOKEN = "MARGINALIA_API_TOKEN"
 
 
 def _build_prompt(ctx: CliContext, *, pending: int = 0) -> str:
@@ -331,6 +332,7 @@ async def _refresh_pending_count(client: MarginaliaClient) -> int:
 async def run_repl(
     *,
     base_url: str = "http://127.0.0.1:8000",
+    api_token: str | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     mode: str = "remote",
 ) -> int:
@@ -348,7 +350,7 @@ async def run_repl(
     mode
         ``"embedded"`` or ``"remote"`` — affects only the banner.
     """
-    client = MarginaliaClient(base_url=base_url, transport=transport)
+    client = MarginaliaClient(base_url=base_url, api_token=api_token, transport=transport)
     ctx = CliContext(client=client)
     pending_count = 0
 
@@ -438,13 +440,17 @@ def main() -> int:
     if argv and argv[0] == "eval":
         from marginalia.cli.eval_cmd import cmd_eval_main
         return cmd_eval_main(argv[1:])
+    if argv and argv[0] == "mcp":
+        from marginalia.mcp_server import main as mcp_main
+        return mcp_main(argv[1:])
 
     parser = argparse.ArgumentParser(
         prog="marginalia",
         description=(
             "Marginalia CLI. Run with no args for the embedded REPL, "
             "`--server URL` (or MARGINALIA_SERVER env) for remote mode, "
-            "or `marginalia init` to bootstrap a project."
+            "`marginalia mcp` for the stdio MCP server, or "
+            "`marginalia init` to bootstrap a project."
         ),
     )
     parser.add_argument(
@@ -452,12 +458,19 @@ def main() -> int:
         help="Server URL for remote mode. If omitted, runs in-process "
              "(reads MARGINALIA_SERVER env as fallback).",
     )
+    parser.add_argument(
+        "--api-token", default=None,
+        help="Bearer token for remote mode. Falls back to MARGINALIA_API_TOKEN.",
+    )
     args = parser.parse_args(argv)
     server_url = args.server or os.environ.get(ENV_SERVER) or None
+    api_token = args.api_token or os.environ.get(ENV_API_TOKEN) or None
 
     try:
         if server_url:
-            return asyncio.run(run_repl(base_url=server_url, mode="remote"))
+            return asyncio.run(
+                run_repl(base_url=server_url, api_token=api_token, mode="remote")
+            )
         return asyncio.run(_run_embedded())
     except KeyboardInterrupt:
         return 130

@@ -15,17 +15,16 @@ Verifies:
 """
 from __future__ import annotations
 
+import os
+from uuid import uuid4
 import asyncio
 import json
-import os
-import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_dispatcher_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get("MARGINALIA_TEST_TMP", Path(__file__).resolve().parent))
+_TEST_ROOT = _TEST_PARENT / f"_dispatcher_e2e_data_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
@@ -33,6 +32,7 @@ os.environ["WORKER_ENABLED"] = "false"
 os.environ["WORKER_POLL_INTERVAL_SECONDS"] = "0.1"
 os.environ["WORKER_LEASE_SECONDS"] = "5"
 os.environ["AUTO_LIFECYCLE_ENABLED"] = "true"
+os.environ["RELATION_BACKGROUND_VETTING_ENABLED"] = "true"
 os.environ["LLM_DEFAULT_API_KEY"] = "sk-fake"
 os.environ["LLM_DEFAULT_MODEL"] = "fake-model"
 

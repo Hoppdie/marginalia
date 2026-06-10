@@ -24,12 +24,10 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.db.engine import get_session_factory
-from marginalia.db.models import File, FileEntry
+from marginalia.db.models import FileEntry
 from marginalia.repositories import entries as entries_repo
 from marginalia.services.entries import _build_folder_display_path
 

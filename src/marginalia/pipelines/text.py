@@ -22,7 +22,6 @@ import re
 from dataclasses import replace
 from typing import Any
 
-from marginalia.config import get_settings, resolve_profile
 from marginalia.llm import (
     ChatRequest,
     cacheable_prompt_messages,
@@ -850,7 +849,7 @@ def _pattern_search(
 
     lines = body.splitlines()
     line_starts: list[int] = [0]
-    for i, ln in enumerate(lines):
+    for _i, ln in enumerate(lines):
         line_starts.append(line_starts[-1] + len(ln) + 1)
 
     def line_of(pos: int) -> int:

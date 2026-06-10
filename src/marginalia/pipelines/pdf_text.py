@@ -13,6 +13,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
+from marginalia.citations import normalize_quote_match_text, quote_matches_source_text
 from marginalia.storage.base import StorageBackend
 
 PDF_TEXT_CACHE_MAX_DOCS = 6
@@ -128,14 +129,10 @@ async def get_pdf_page_labels_for_file(
 
 def locate_quote_page(doc: PdfTextRange, quote: str) -> int | None:
     needle = _unescape_quote(quote)
-    norm_needle = _norm(needle)
-    compact_needle = _compact(needle)
-    if not norm_needle and not compact_needle:
+    if not normalize_quote_match_text(needle):
         return None
     for idx, page_text in enumerate(doc.pages, start=doc.page_start):
-        if norm_needle and norm_needle in _norm(page_text):
-            return idx
-        if compact_needle and compact_needle in _compact(page_text):
+        if quote_matches_source_text(page_text, needle):
             return idx
     return None
 
@@ -221,14 +218,6 @@ def _put_lru(cache: OrderedDict[str, Any], key: str, value: Any, max_items: int)
 
 def _unescape_quote(s: str) -> str:
     return s.replace(r"\"", '"').replace(r"\\", "\\")
-
-
-def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip().casefold()
-
-
-def _compact(text: str) -> str:
-    return re.sub(r"\s+", "", text).casefold()
 
 
 def _label_norm(text: str) -> str:

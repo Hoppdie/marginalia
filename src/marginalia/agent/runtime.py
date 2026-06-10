@@ -52,7 +52,7 @@ import urllib.parse
 from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from marginalia.agent.stable_context import (
     build_resumed_messages,
@@ -66,6 +66,7 @@ from marginalia.citations import (
     CITATION_FOOTNOTE_RE,
     CitationFootnote,
     parse_citation_footnote_match,
+    quote_matches_source_text,
     unescape_citation_quote,
 )
 from marginalia.db.models import Session as SessionRow
@@ -87,6 +88,7 @@ from marginalia.pipelines.pdf_text import (
     locate_quote_page,
     resolve_page_label,
 )
+from marginalia.pipelines import resolve_pipeline
 from marginalia.repositories import sessions as session_service
 from marginalia.repositories import entries as entries_repo
 from marginalia.repositories import tags as tags_repo
@@ -101,6 +103,8 @@ log = logging.getLogger(__name__)
 
 MAX_TOOL_RESULT_LEN = 50_000
 QUICK_EXECUTE_MAX_TURNS = 4
+STANDARD_EXECUTE_MAX_TURNS = 8
+AUTO_MAX_BUDGET_UPGRADES = 2
 QUICK_FORCED_ANSWER_RETRIES = 1
 # Structured-truncation safety net: how many trim passes before falling
 # back to string slicing. Practically each pass halves one large list, so
@@ -112,10 +116,14 @@ STRUCTURED_TRUNCATE_PASSES = 3
 PLAN_MAX_TOKENS = 1024
 EXECUTE_MAX_TOKENS = 2048
 TOOL_RESULT_PREVIEW_LEN = 240
+QUOTE_VERIFY_MAX_CHARS = 1_000_000
 
 NO_PLAN_PREFIX = "NO_PLAN:"
+BUDGET_PREFIX = "BUDGET:"
 SESSION_NAME_PREFIX = "Session name:"
 MAX_SESSION_NAME_LEN = 80
+BudgetTier = Literal["quick", "standard", "deep"]
+BUDGET_TIERS: tuple[BudgetTier, ...] = ("quick", "standard", "deep")
 
 # Doom-loop: if the same (name, canonical_args) shows up
 # DOOM_LOOP_THRESHOLD times within the last DOOM_LOOP_WINDOW tool calls,
@@ -327,6 +335,39 @@ class _ExecuteOutcome:
     truncated: bool = False
 
 
+@dataclass(slots=True)
+class _DispatchStats:
+    """One execute round's useful-work summary for auto-budget routing."""
+    successful_new_results: int = 0
+
+
+@dataclass(slots=True)
+class _BudgetState:
+    requested_mode: str
+    initial_tier: BudgetTier
+    current_tier: BudgetTier
+    limit: int
+    hard_limit: int
+    source: str
+    max_upgrades: int = 0
+    upgrades: int = 0
+
+    @property
+    def auto(self) -> bool:
+        return self.requested_mode == "auto"
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "mode": self.requested_mode,
+            "tier": self.current_tier,
+            "initial_tier": self.initial_tier,
+            "limit": self.limit,
+            "hard_limit": self.hard_limit,
+            "source": self.source,
+            "upgrades": self.upgrades,
+        }
+
+
 async def run_turn(
     *,
     session_id: str,
@@ -388,9 +429,17 @@ async def run_turn(
     session_name = _extract_session_name(plan_text)
     if session_name:
         await _store_session_name(session_id, session_name)
-    plan_for_execute = _strip_session_name_line(plan_text)
+    plan_without_session = _strip_session_name_line(plan_text)
+    budget_state = _budget_state_for_plan(
+        mode=options.mode,
+        plan_text=plan_without_session,
+    )
+    plan_for_execute = _strip_budget_line(plan_without_session)
     public_plan_text = _public_plan_text(plan_for_execute)
-    yield AgentEvent(event_type="plan", data=public_plan_text)
+    yield AgentEvent(
+        event_type="plan",
+        data=_plan_event_payload(public_plan_text, budget_state),
+    )
 
     outcome = _ExecuteOutcome()
     no_plan_answer = _extract_no_plan_answer(plan_for_execute)
@@ -422,6 +471,7 @@ async def run_turn(
             outcome=outcome,
             resumed_history=resumed_history,
             options=options,
+            budget_state=budget_state,
         ):
             yield ev
 
@@ -455,6 +505,7 @@ async def run_turn(
                 "truncated": outcome.truncated,
                 "no_plan": no_plan_answer is not None,
                 "mode": options.mode,
+                "budget": budget_state.payload(),
             },
         )
         conv = await session_service.get_conversation(db, conversation_id)
@@ -483,6 +534,7 @@ async def run_turn(
             "truncated": outcome.truncated,
             "session_name": session_name,
             "mode": options.mode,
+            "budget": budget_state.payload(),
         }),
     )
 
@@ -518,6 +570,31 @@ def _strip_session_name_line(plan_text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _extract_budget_tier(plan_text: str) -> BudgetTier | None:
+    if not plan_text:
+        return None
+    for raw in plan_text.splitlines():
+        text = raw.strip()
+        if not text:
+            continue
+        if not text.startswith(BUDGET_PREFIX):
+            return None
+        value = text[len(BUDGET_PREFIX):].strip().casefold()
+        if value in BUDGET_TIERS:
+            return value  # type: ignore[return-value]
+        return None
+    return None
+
+
+def _strip_budget_line(plan_text: str) -> str:
+    if not plan_text:
+        return plan_text
+    lines = plan_text.splitlines()
+    if lines and lines[0].strip().startswith(BUDGET_PREFIX):
+        return "\n".join(lines[1:]).strip()
+    return plan_text.strip()
+
+
 _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s*")
 
 
@@ -525,6 +602,7 @@ def _public_plan_text(plan_text: str) -> str:
     """Return planner text with numbering stripped for the UI list."""
     if not plan_text:
         return plan_text
+    plan_text = _strip_budget_line(plan_text)
     if plan_text.lstrip().startswith(NO_PLAN_PREFIX):
         return plan_text.strip()
     public_lines: list[str] = []
@@ -536,6 +614,102 @@ def _public_plan_text(plan_text: str) -> str:
         if line:
             public_lines.append(line)
     return "\n".join(public_lines).strip()
+
+
+def _tier_limit(tier: BudgetTier, hard_limit: int) -> int:
+    if tier == "quick":
+        return min(QUICK_EXECUTE_MAX_TURNS, hard_limit)
+    if tier == "standard":
+        return min(STANDARD_EXECUTE_MAX_TURNS, hard_limit)
+    return hard_limit
+
+
+def _budget_state_for_plan(*, mode: str, plan_text: str) -> _BudgetState:
+    hard_limit = max(3, get_settings().agent_execute_max_turns)
+    parsed = _extract_budget_tier(plan_text)
+    if mode == "quick":
+        tier: BudgetTier = "quick"
+        limit = _tier_limit(tier, hard_limit)
+        return _BudgetState(
+            requested_mode=mode,
+            initial_tier=tier,
+            current_tier=tier,
+            limit=limit,
+            hard_limit=limit,
+            source="manual",
+        )
+    if mode == "deep":
+        tier = "deep"
+        return _BudgetState(
+            requested_mode=mode,
+            initial_tier=tier,
+            current_tier=tier,
+            limit=hard_limit,
+            hard_limit=hard_limit,
+            source="manual",
+        )
+    tier = parsed or "standard"
+    return _BudgetState(
+        requested_mode="auto",
+        initial_tier=tier,
+        current_tier=tier,
+        limit=_tier_limit(tier, hard_limit),
+        hard_limit=hard_limit,
+        source="planner" if parsed else "default",
+        max_upgrades=AUTO_MAX_BUDGET_UPGRADES,
+    )
+
+
+def _next_budget_tier(tier: BudgetTier) -> BudgetTier | None:
+    idx = BUDGET_TIERS.index(tier)
+    if idx + 1 >= len(BUDGET_TIERS):
+        return None
+    return BUDGET_TIERS[idx + 1]
+
+
+def _try_upgrade_budget(
+    budget: _BudgetState,
+    *,
+    guard: _CallGuard,
+    stats: _DispatchStats,
+) -> tuple[bool, int | None]:
+    if not budget.auto:
+        return False, None
+    if budget.upgrades >= budget.max_upgrades:
+        return False, None
+    if budget.limit >= budget.hard_limit:
+        return False, None
+    if guard.nudged:
+        return False, None
+    if stats.successful_new_results <= 0:
+        return False, None
+    next_tier = _next_budget_tier(budget.current_tier)
+    if next_tier is None:
+        return False, None
+    new_limit = _tier_limit(next_tier, budget.hard_limit)
+    if new_limit <= budget.limit:
+        return False, None
+    previous = budget.limit
+    budget.current_tier = next_tier
+    budget.limit = new_limit
+    budget.upgrades += 1
+    return True, previous
+
+
+def _plan_event_payload(plan_text: str, budget: _BudgetState) -> str:
+    payload: dict[str, Any] = {"text": plan_text}
+    if not plan_text.lstrip().startswith(NO_PLAN_PREFIX):
+        payload["budget"] = budget.payload()
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _execute_system_prompt_with_budget(system_prompt: str, *, limit: int) -> str:
+    return (
+        system_prompt
+        + "\n\nRuntime budget: this turn has about "
+        f"{limit} execute rounds available. Use tools only until enough "
+        "source evidence is collected, then answer."
+    )
 
 
 def _clean_session_name(raw: str) -> str:
@@ -806,6 +980,69 @@ async def _resolve_pdf_page_locator(file: Any, page: str | None) -> int | None:
         return first
 
 
+def _quote_source_cache_key(file: Any) -> str | None:
+    for attr in ("sha256", "id", "storage_key"):
+        value = getattr(file, attr, None)
+        if value:
+            return f"{attr}:{value}"
+    return None
+
+
+async def _verify_quote_in_file(
+    file: Any,
+    quote: str,
+    *,
+    display_name: str | None = None,
+    text_cache: dict[str, str | None] | None = None,
+) -> bool:
+    """Best-effort quote verification for non-PDF text-like pipelines."""
+    if file is None or not (quote or "").strip():
+        return False
+
+    cache_key = _quote_source_cache_key(file)
+    if text_cache is not None and cache_key and cache_key in text_cache:
+        source = text_cache[cache_key]
+        return bool(source and quote_matches_source_text(source, _unescape_quote(quote)))
+
+    try:
+        pipeline = resolve_pipeline(
+            getattr(file, "mime_type", None),
+            getattr(file, "original_ext", None),
+            filename=display_name,
+        )
+        if pipeline is None:
+            source = None
+        else:
+            from marginalia.storage import get_storage
+
+            seg = await pipeline.read_segment(
+                file_row=file,
+                args={"offset": 0, "max_chars": QUOTE_VERIFY_MAX_CHARS},
+                storage=get_storage(),
+            )
+            source = None if seg.error else (seg.text or "")
+    except Exception:
+        log.exception("footnote rewrite: quote verification failed")
+        source = None
+
+    if text_cache is not None and cache_key:
+        text_cache[cache_key] = source
+    return bool(source and quote_matches_source_text(source, _unescape_quote(quote)))
+
+
+def _quote_status_text(status: bool | None) -> str | None:
+    if status is None:
+        return None
+    return f"quote_status={'verified' if status else 'unverified'}"
+
+
+def _footnote_detail(reason: str | None, quote_status: bool | None) -> str | None:
+    status = _quote_status_text(quote_status)
+    if status and reason:
+        return f"{status}; {reason}"
+    return status or reason
+
+
 async def _rewrite_footnotes_for_display(answer: str) -> str:
     """Resolve `[^a]: entry_id=<uuid>, quote="...", page=N - reason` defs to
     `[^a]: [name](entry:<id>?q=...|?page=N) — reason` for live SSE rendering.
@@ -846,24 +1083,34 @@ async def _rewrite_footnotes_for_display(answer: str) -> str:
         return answer
 
     located_pdf_pages: dict[int, int] = {}
+    quote_status_by_start: dict[int, bool] = {}
     pdf_pages_cache: dict[str, PdfTextRange] = {}
+    quote_text_cache: dict[str, str | None] = {}
     for footnote in footnotes:
         raw_eid = footnote.entry_id
         full_eid = resolved.get(raw_eid, raw_eid)
         file = file_by_id.get(full_eid)
         quote = footnote.quote
         page = footnote.page
-        if not _is_pdf_file(file):
+        if _is_pdf_file(file):
+            located = None
+            if quote:
+                located = await _locate_pdf_quote_page(
+                    file, quote, pages_cache=pdf_pages_cache,
+                )
+                quote_status_by_start[footnote.start] = located is not None
+            if located is None and page:
+                located = await _resolve_pdf_page_locator(file, page)
+            if located:
+                located_pdf_pages[footnote.start] = located
             continue
-        located = None
         if quote:
-            located = await _locate_pdf_quote_page(
-                file, quote, pages_cache=pdf_pages_cache,
+            quote_status_by_start[footnote.start] = await _verify_quote_in_file(
+                file,
+                quote,
+                display_name=name_by_id.get(full_eid),
+                text_cache=quote_text_cache,
             )
-        if located is None and page:
-            located = await _resolve_pdf_page_locator(file, page)
-        if located:
-            located_pdf_pages[footnote.start] = located
 
     footnote_by_start = {footnote.start: footnote for footnote in footnotes}
 
@@ -874,6 +1121,7 @@ async def _rewrite_footnotes_for_display(answer: str) -> str:
         quote = footnote.quote
         page = footnote.page
         reason = footnote.reason
+        quote_status = quote_status_by_start.get(m.start()) if quote else None
 
         full_eid = resolved.get(raw_eid, raw_eid)
         short = full_eid[:8]
@@ -888,8 +1136,9 @@ async def _rewrite_footnotes_for_display(answer: str) -> str:
                 located_pdf_page=located_pdf_pages.get(m.start()),
             )
             head = f"[{name}](entry:{full_eid}{qs})"
-        if reason:
-            return f"[^{marker}]: {head} — {reason}"
+        detail = _footnote_detail(reason, quote_status)
+        if detail:
+            return f"[^{marker}]: {head} — {detail}"
         return f"[^{marker}]: {head}"
 
     return _LIVE_FOOTNOTE_RE.sub(_replace, answer)
@@ -910,6 +1159,7 @@ async def _run_execute_phase(
     prefix_messages: list[ChatMessage] | None = None,
     resumed_history: list[ChatMessage] | None = None,
     options: RunOptions | None = None,
+    budget_state: _BudgetState | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Execute loop as event stream.
 
@@ -925,6 +1175,10 @@ async def _run_execute_phase(
     builder.
     """
     options = options or RunOptions()
+    budget_state = budget_state or _budget_state_for_plan(
+        mode=options.mode,
+        plan_text="",
+    )
     quick_mode = options.mode == "quick"
     tool_defs = all_tool_defs()
     ctx = ToolContext(
@@ -947,16 +1201,13 @@ async def _run_execute_phase(
     )
 
     settings = get_settings()
-    max_execute_turns = (
-        QUICK_EXECUTE_MAX_TURNS
-        if quick_mode
-        else max(3, settings.agent_execute_max_turns)
-    )
+    max_execute_turns = budget_state.limit
+    hard_execute_turns = budget_state.hard_limit
     max_final_continuations = (
         0 if quick_mode else max(0, settings.agent_final_answer_continue_turns)
     )
     max_final_chars = max(0, settings.agent_final_answer_max_chars)
-    max_total_turns = max_execute_turns + max_final_continuations + (
+    max_total_turns = hard_execute_turns + max_final_continuations + (
         QUICK_FORCED_ANSWER_RETRIES if quick_mode else 0
     )
 
@@ -966,16 +1217,26 @@ async def _run_execute_phase(
     continuing_final_answer = False
     quick_forced_answer_retries = 0
     quick_forced_answer_active = False
+    budget_upgrade_notice: dict[str, Any] | None = None
 
     for turn in range(max_total_turns):
+        max_execute_turns = budget_state.limit
         if (
             turn >= max_execute_turns
             and not continuing_final_answer
             and not quick_forced_answer_active
         ):
             break
+        auto_budget_final_round = (
+            budget_state.auto
+            and not continuing_final_answer
+            and turn >= max_execute_turns - 1
+        )
         force_final_answer = (
-            quick_mode
+            (
+                quick_mode
+                or auto_budget_final_round
+            )
             and not continuing_final_answer
             and (turn >= max_execute_turns - 1 or quick_forced_answer_active)
         )
@@ -987,6 +1248,7 @@ async def _run_execute_phase(
                 turn=turn,
                 limit=max_execute_turns,
                 mode=options.mode,
+                force_final_answer=force_final_answer,
             )
         )
         loop_messages = messages + [
@@ -995,22 +1257,36 @@ async def _run_execute_phase(
         tools_disabled = continuing_final_answer or force_final_answer
         request_tools = None if tools_disabled else tool_defs
 
+        thinking_payload = {
+            "round": max_execute_turns
+            if quick_forced_answer_active else turn + 1,
+            "limit": max_execute_turns,
+            "hard_limit": hard_execute_turns,
+            "final_continuation": continuing_final_answer,
+            "mode": options.mode,
+            "budget_tier": budget_state.current_tier,
+            "budget_initial_tier": budget_state.initial_tier,
+            "budget_upgrades": budget_state.upgrades,
+            "force_final_answer": force_final_answer,
+            "forced_answer_retry": quick_forced_answer_active,
+        }
+        if budget_upgrade_notice is not None:
+            thinking_payload["budget_upgraded"] = True
+            thinking_payload["previous_limit"] = budget_upgrade_notice.get(
+                "previous_limit"
+            )
+            budget_upgrade_notice = None
         yield AgentEvent(
             event_type="thinking",
-            data=json.dumps({
-                "round": max_execute_turns
-                if quick_forced_answer_active else turn + 1,
-                "limit": max_execute_turns,
-                "final_continuation": continuing_final_answer,
-                "mode": options.mode,
-                "force_final_answer": force_final_answer,
-                "forced_answer_retry": quick_forced_answer_active,
-            }, ensure_ascii=False),
+            data=json.dumps(thinking_payload, ensure_ascii=False),
         )
 
         started = time.monotonic()
         resp = await chat.complete(ChatRequest(
-            system=system_prompt,
+            system=_execute_system_prompt_with_budget(
+                system_prompt,
+                limit=max_execute_turns,
+            ),
             messages=loop_messages,
             max_tokens=settings.agent_execute_max_tokens,
             tools=request_tools,
@@ -1035,6 +1311,9 @@ async def _run_execute_phase(
                 extra={
                     "execute_turn": turn,
                     "mode": options.mode,
+                    "budget_tier": budget_state.current_tier,
+                    "budget_limit": max_execute_turns,
+                    "budget_upgrades": budget_state.upgrades,
                     "stop_reason": resp.stop_reason,
                     "final_continuation": continuing_final_answer,
                     "final_continuation_index": final_continuations
@@ -1086,16 +1365,34 @@ async def _run_execute_phase(
             messages.append(ChatMessage(role="assistant", content=assistant_blocks))
 
             tool_result_blocks: list[ToolResultBlock] = []
+            dispatch_stats = _DispatchStats()
             async for ev in _dispatch_tool_calls(
                 tool_calls=resp.tool_calls,
                 ctx=ctx,
                 conversation_id=conversation_id,
                 result_blocks=tool_result_blocks,
                 guard=guard,
+                stats=dispatch_stats,
             ):
                 yield ev
             messages.append(ChatMessage(role="tool", content=tool_result_blocks))
             last_text = resp.text or last_text
+            if turn + 1 >= max_execute_turns - 1:
+                upgraded, previous_limit = _try_upgrade_budget(
+                    budget_state,
+                    guard=guard,
+                    stats=dispatch_stats,
+                )
+                if upgraded:
+                    log.info(
+                        "conversation %s auto budget upgraded %s -> %s rounds",
+                        conversation_id,
+                        previous_limit,
+                        budget_state.limit,
+                    )
+                    budget_upgrade_notice = {
+                        "previous_limit": previous_limit,
+                    }
             continue
 
         if resp.text:
@@ -1223,7 +1520,13 @@ async def _run_execute_phase(
     )
 
 
-def _budget_tail(*, turn: int, limit: int, mode: str = "deep") -> str | None:
+def _budget_tail(
+    *,
+    turn: int,
+    limit: int,
+    mode: str = "deep",
+    force_final_answer: bool = False,
+) -> str | None:
     """Return the budget tail message for execute turn `turn` (0-indexed).
 
     Always show 'rounds used / left'. Once the run enters the last third of
@@ -1236,6 +1539,13 @@ def _budget_tail(*, turn: int, limit: int, mode: str = "deep") -> str | None:
         f"[turn tail] tool rounds used {used} / limit {limit} "
         f"(remaining {left})."
     )
+    if force_final_answer and mode != "quick":
+        return (
+            base
+            + " Final budget round: do not call tools. Answer from the "
+            "evidence already collected. If evidence is insufficient, state "
+            "the gap instead of expanding the search."
+        )
     if mode == "quick":
         if used + 1 >= limit:
             return (
@@ -1294,6 +1604,7 @@ async def _dispatch_tool_calls(
     conversation_id: str,
     result_blocks: list[ToolResultBlock],
     guard: _CallGuard,
+    stats: _DispatchStats | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Preflight + parallel execution + completion-order drain.
 
@@ -1581,6 +1892,8 @@ async def _dispatch_tool_calls(
                     tool_call_id=tc.id, content=result_text,
                 )
                 guard.remember(key, result_text, preview=preview)
+                if stats is not None:
+                    stats.successful_new_results += 1
                 yield AgentEvent(
                     event_type="tool_result",
                     data=json.dumps({

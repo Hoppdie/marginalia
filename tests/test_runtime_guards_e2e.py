@@ -22,14 +22,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_runtime_guards_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get("MARGINALIA_TEST_TMP", Path(__file__).resolve().parent))
+_TEST_ROOT = _TEST_PARENT / f"_runtime_guards_e2e_data_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
@@ -171,7 +170,7 @@ async def test_no_plan_fast_path() -> None:
     seq = [e[0] for e in events]
     assert "planning" in seq
     assert "plan" in seq
-    plan = next(d for ev, d in events if ev == "plan")
+    plan = json.loads(next(d for ev, d in events if ev == "plan"))["text"]
     assert "Session name:" not in plan, plan
     # No execute phase: no `thinking` event.
     assert "thinking" not in seq, seq
@@ -360,7 +359,7 @@ async def test_final_answer_continuation_is_buffered() -> None:
     _install_chat(chat)
 
     events = await _drive(sid, "make it long")
-    plan = next(d for ev, d in events if ev == "plan")
+    plan = json.loads(next(d for ev, d in events if ev == "plan"))["text"]
     assert "Session name:" not in plan, plan
     answers = [d for ev, d in events if ev == "answer"]
     assert answers == ["Part A Part B."], answers
@@ -394,6 +393,7 @@ def test_canonical_args() -> None:
 
 def test_public_plan_text_strips_numbering() -> None:
     plan = (
+        "BUDGET: standard\n"
         "1. 定位案件材料和适用规则。\n"
         "2. 核验证据材料与庭审陈述。\n"
         "3. 分项分析诉讼请求是否支持。\n"

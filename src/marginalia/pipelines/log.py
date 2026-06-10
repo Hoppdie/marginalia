@@ -16,7 +16,6 @@ Recognized formats (probed in order, first match wins per line):
 """
 from __future__ import annotations
 
-import io
 import logging
 import re
 from collections import Counter

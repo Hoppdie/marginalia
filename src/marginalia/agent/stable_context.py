@@ -13,8 +13,9 @@ complete unit to detect and store.
 Mirrors kb-lite's split (PLANNING_PROMPT vs SYSTEM_PROMPT). Keeping the
 phases' prompts disjoint prevents cross-contamination — the answer-shaped
 rules (markdown layout, `[^a]` footnotes, citation discipline) only apply
-in execute, and the plan contract (numbered plain-text or NO_PLAN) only
-applies in plan. Earlier the two were fused into one `AGENT_IDENTITY`,
+in execute, and the plan contract (budget line plus numbered plain-text, or
+NO_PLAN) only applies in plan. Earlier the two were fused into one
+`AGENT_IDENTITY`,
 which let the planner write a full markdown answer in the plan slot and
 let the executor inherit phantom plan-phase rules.
 
@@ -127,12 +128,19 @@ Output exactly one form, ending with a session title line:
    clearly external realtime data such as weather, prices, or breaking news.
    Do not include citations, footnotes, headings, tables, or `entry_id=`.
 
-2. A plain numbered natural-language plan, 3-5 lines, then:
+2. A budget line followed by a plain numbered natural-language plan, then:
+   `BUDGET: quick|standard|deep`
    `<number>. <short investigation step in the user's language>`
    `Session name: <2-8 word title in the user's language>`
 
 Plan constraints:
-- Start directly with `NO_PLAN: ` or `1. `.
+- For normal plans, the first line must be exactly one budget line:
+  `BUDGET: quick`, `BUDGET: standard`, or `BUDGET: deep`.
+- Pick `quick` when the task probably needs only a small number of reads,
+  `standard` for ordinary investigation, and `deep` only when broad,
+  multi-document evidence gathering is clearly required. When unsure, choose
+  the lower tier; the runtime can upgrade after early tool results.
+- Start directly with `NO_PLAN: ` or `BUDGET: `.
 - The final line must start exactly with `Session name: `.
 - The session name should be concise, human-readable, and specific to this
   session's topic. Do not include quotes, Markdown, UUIDs, or `entry_id=`.

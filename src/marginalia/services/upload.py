@@ -36,9 +36,7 @@ from marginalia.repositories import entries as entries_repo
 from marginalia.repositories import entry_tags as entry_tags_repo
 from marginalia.repositories import files as files_repo
 from marginalia.services.folders import (
-    AmbiguousRemotePathError,
     FolderNotFoundError,
-    parse_remote_folder,
     resolve_or_create_folder,
     split_remote_path,
 )

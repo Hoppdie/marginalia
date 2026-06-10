@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +25,7 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "dev"
+    marginalia_api_token: str | None = None
 
     # Single root for all on-disk state (db, library, caches). Default
     # is ~/Marginalia. Per-component overrides below take precedence
@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # Personal knowledge bases often prefer manual lifecycle control, while
     # team/shared deployments may want background cost management.
     auto_lifecycle_enabled: bool = False
+
+    # Rolling 24-hour token cap for background maintenance LLM work.
+    # 0 disables the cap. Foreground ingest/chat reflection are not limited.
+    maintenance_daily_token_budget: int = 0
+    relation_background_vetting_enabled: bool = False
 
     # Default policy when an upload / rename / move would collide with an
     # existing display_name in the same folder. `rename` suffixes ` (1)`,

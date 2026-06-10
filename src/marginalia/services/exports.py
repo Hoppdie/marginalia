@@ -331,7 +331,6 @@ def reference_zip_paths(plan: ExportPlan) -> dict[str, tuple[str, str]]:
         seen_eids.add(cite.entry_id)
         base = _safe_zip_name(cite.display_name)
         if base in used and used[base] != cite.entry_id:
-            short = cite.entry_id[:8]
             base = f"{cite.entry_id[:8]}_{base}"
         used[base] = cite.entry_id
         file_path = f"references/{base}"

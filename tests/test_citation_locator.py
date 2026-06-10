@@ -179,6 +179,25 @@ def _check_regex():
     print(f"[1] regex matched all {len(cases)} forms")
 
 
+def _check_quote_matching():
+    _import_runtime()
+    from marginalia.citations import quote_matches_source_text  # noqa: WPS433
+
+    assert quote_matches_source_text(
+        "This note says leader-election is central.",
+        "leader election",
+    )
+    assert quote_matches_source_text(
+        "合同第4.6条：费用，应在三日内支付。",
+        "合同第4 6条 费用",
+    )
+    assert not quote_matches_source_text(
+        "This note says leader-election is central.",
+        "leader replication",
+    )
+    print("[2] quote matching tolerates punctuation/space differences only")
+
+
 async def _check_rewrite():
     rt = _import_runtime()
     eid = "12345678-1234-1234-1234-123456789012"
@@ -430,11 +449,12 @@ async def _check_rewrite():
         expected_q = urllib.parse.quote_plus("contract clause")
         assert f"[my-doc.md](entry:{eid}?q={expected_q})" in out, out
 
-    print("[2] _rewrite_footnotes_for_display: type-aware dispatcher routes quote/page/bare correctly")
+    print("[3] _rewrite_footnotes_for_display: type-aware dispatcher routes quote/page/bare correctly")
 
 
 def main():
     _check_regex()
+    _check_quote_matching()
     asyncio.run(_check_rewrite())
     print("\nALL CITATION LOCATOR CHECKS PASSED")
 
@@ -442,6 +462,10 @@ def main():
 # pytest entry points
 def test_regex():
     _check_regex()
+
+
+def test_quote_matching():
+    _check_quote_matching()
 
 
 def test_rewrite():

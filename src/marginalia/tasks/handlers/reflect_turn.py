@@ -29,7 +29,8 @@ matches DeepSeek's complete-prefix cache-unit rule more closely than putting
 the snapshot after phase-specific system text.
 
 Scope (intentionally narrow):
-  - The ONLY write this handler performs is INSERT INTO journal.
+  - Writes one new journal row, and may mark older contradicted journal rows
+    invalidated for audit-preserving temporal correctness.
   - Cross-session synthesis lives in `summarize_session`.
 
 Inputs:
@@ -42,7 +43,8 @@ Flow:
   4. Append the current turn + reflect-request message.
   5. Call the `reflect` LLM profile with the execute-phase system
      prompt (prefix matches execute → cache hit).
-  6. Parse the <entry> block; INSERT 0..1 journal rows; record_outcome.
+  6. Parse the <entry>/<invalidates> blocks; INSERT 0..1 journal rows,
+     mark contradicted prior rows invalidated, and record_outcome.
 """
 from __future__ import annotations
 
@@ -68,6 +70,7 @@ from marginalia.llm import (
     get_chat_client,
 )
 from marginalia.llm.tagged_response import parse_tagged
+from marginalia.repositories import journal as journal_repo
 from marginalia.repositories.task_outcomes import has_outcome, record_outcome
 from marginalia.tasks.kinds import task_handler
 from marginalia.utils.ids import new_id
@@ -77,6 +80,8 @@ log = logging.getLogger(__name__)
 KIND_REFLECT_TURN = "reflect_turn"
 
 ENTRY_LIMIT = 30  # cap how many entries we feed the model context for
+PRIOR_JOURNAL_LIMIT = 12
+PRIOR_NOTE_PREVIEW_CHARS = 700
 
 # Reflect instructions — embedded in the final user message rather than
 # as a separate system prompt, so the system prompt stays identical to
@@ -102,7 +107,13 @@ Decision:
 Always write an entry for knowledge-base-related turns, including "not found"
 results. Only pure small talk should be empty.
 
-Output exactly one block:
+If the prompt includes "Prior active journal notes for the same entries",
+check whether this turn's actual result directly contradicts any listed
+prior note. Only invalidate when the prior note is now false, not merely
+less detailed, older, or about a different aspect. Use only journal_id
+values from the provided prior-note list.
+
+Output exactly these blocks:
 
   <entry>
   question: one-line question
@@ -111,9 +122,14 @@ Output exactly one block:
   tags: tag1, tag2
   </entry>
 
+  <invalidates>
+  journal_id: short contradiction reason
+  </invalidates>
+
 `answer:` may span lines and ends when the next labeled field,
 `entry_ids:` or `tags:`, starts. Leave the whole block empty, or omit field
-values, to skip writing. Do not output JSON or fenced code."""
+values, to skip writing. Leave <invalidates> empty when nothing is directly
+contradicted. Do not output JSON or fenced code."""
 
 
 def _utcnow() -> datetime:
@@ -157,6 +173,15 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
         snapshot = await build_stable_snapshot(
             session, session_started_at=session_row.started_at,
         )
+        prior_journal = [
+            _prior_journal_candidate(row)
+            for row in await journal_repo.list_active_related_recent(
+                session,
+                entry_ids=involved_entry_ids,
+                before=conversation.ended_at,
+                limit=PRIOR_JOURNAL_LIMIT,
+            )
+        ]
         await session.commit()
 
     # --- Build messages: reuse execute-phase prefix for cache hit ---
@@ -188,10 +213,13 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
     )
     if involved_entry_ids:
         reflect_tail += (
-            f"Entry IDs involved in this turn: "
+            "Entry IDs involved in this turn: "
             + ", ".join(involved_entry_ids)
             + "\n\n"
         )
+    prior_text = _render_prior_journal_candidates(prior_journal)
+    if prior_text:
+        reflect_tail += prior_text + "\n\n"
     reflect_tail += REFLECT_INSTRUCTIONS
 
     reflect_messages = list(snapshot_messages) + list(resumed) + [
@@ -208,8 +236,21 @@ async def handle_reflect_turn(payload: Mapping[str, Any]) -> None:
     ))
     tagged = parse_tagged(resp.text or "")
     entry = _parse_entry_block(tagged.get("entry", ""))
+    candidate_ids = {
+        str(item.get("id"))
+        for item in prior_journal
+        if item.get("id")
+    }
+    invalidations = {
+        journal_id: reason
+        for journal_id, reason in _parse_invalidates_block(
+            tagged.get("invalidates", ""),
+        ).items()
+        if journal_id in candidate_ids
+    }
     data: dict[str, Any] = {
         "journal_entries": [entry] if entry is not None else [],
+        "invalidations": invalidations,
     }
 
     async with session_scope() as session:
@@ -267,6 +308,54 @@ def _parse_entry_block(block: str) -> dict[str, Any] | None:
     }
 
 
+def _parse_invalidates_block(block: str) -> dict[str, str]:
+    invalidations: dict[str, str] = {}
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        journal_id, reason = line.split(":", 1)
+        journal_id = journal_id.strip().lstrip("-").strip()
+        reason = reason.strip()
+        if _looks_like_id(journal_id):
+            invalidations[journal_id] = reason
+    return invalidations
+
+
+def _prior_journal_candidate(row: Journal) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "source_kind": row.source_kind,
+        "note": row.note or "",
+        "entry_ids": list(row.entry_ids or []),
+        "tags": list(row.tags or []),
+        "created_at": row.created_at,
+    }
+
+
+def _render_prior_journal_candidates(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    lines = ["Prior active journal notes for the same entries:"]
+    for row in rows:
+        note = _compact_preview(str(row.get("note") or ""), PRIOR_NOTE_PREVIEW_CHARS)
+        lines.extend([
+            f"- journal_id: {row['id']}",
+            f"  source_kind: {row.get('source_kind') or 'journal'}",
+            f"  entry_ids: {', '.join(str(e) for e in row.get('entry_ids') or [])}",
+            f"  tags: {', '.join(str(t) for t in row.get('tags') or [])}",
+            f"  note: {note}",
+        ])
+    return "\n".join(lines)
+
+
+def _compact_preview(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
 def _collect_involved_entry_ids(conv: Conversation) -> list[str]:
     """Pull entry_ids out of tool_calls payloads.
 
@@ -311,6 +400,8 @@ async def _persist_reflection(
 ) -> None:
     now = _utcnow()
     journal_count = 0
+    invalidated_count = 0
+    inserted_journal_id: str | None = None
 
     for j in data.get("journal_entries") or []:
         question = (j.get("question") or "").strip()
@@ -318,8 +409,9 @@ async def _persist_reflection(
         if not question and not answer:
             continue
         note = f"Q: {question}\nA: {answer}"
+        inserted_journal_id = new_id()
         session.add(Journal(
-            id=new_id(),
+            id=inserted_journal_id,
             conversation_id=conversation_id,
             note=note,
             entry_ids=list(j.get("entry_ids") or []),
@@ -329,11 +421,28 @@ async def _persist_reflection(
         ))
         journal_count += 1
 
+    invalidations = data.get("invalidations") or {}
+    if inserted_journal_id and isinstance(invalidations, dict) and invalidations:
+        await session.flush()
+        invalidated_count = await journal_repo.mark_invalidated(
+            session,
+            {
+                str(journal_id): str(reason)
+                for journal_id, reason in invalidations.items()
+                if str(journal_id) != inserted_journal_id
+            },
+            by_id=inserted_journal_id,
+            at=now,
+        )
+
     await record_outcome(
         session,
         task_kind="reflect_turn",
         object_kind="conversation",
         object_id=conversation_id,
         outcome="applied" if journal_count else "noop",
-        detail={"journal_entries": journal_count},
+        detail={
+            "journal_entries": journal_count,
+            "invalidated_journal_entries": invalidated_count,
+        },
     )

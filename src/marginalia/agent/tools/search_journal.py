@@ -15,6 +15,9 @@ Superseded insight rows (whose `superseded_by_id IS NOT NULL`) are hidden by
 default; the chain replacement is the answer. Set `include_superseded=true`
 to see history.
 
+Invalidated rows (contradicted by later reflect_turn output) are also hidden
+by default. Set `include_invalidated=true` for audit/debugging.
+
 Text lookup accepts a string or an array. Multi-term text is ORed, so broad
 recall should use `text=["term1", "term2"]` instead of one packed phrase.
 """
@@ -79,6 +82,13 @@ SCHEMA: dict[str, Any] = {
                 "If true, include insight rows that have been replaced by a "
                 "newer version. Default false; only the current version of "
                 "each chain is returned."
+            ),
+        },
+        "include_invalidated": {
+            "type": "boolean",
+            "description": (
+                "If true, include journal rows hidden because a later "
+                "reflection found them contradicted. Default false."
             ),
         },
         "since_days": {
@@ -147,6 +157,7 @@ async def run_search_journal(
     kinds = list(args.get("kinds") or ["insight", "reflect_turn"])
     conversation_id = args.get("conversation_id")
     include_superseded = bool(args.get("include_superseded") or False)
+    include_invalidated = bool(args.get("include_invalidated") or False)
     since_days = int(args.get("since_days") or 90)
     limit = min(int(args.get("limit") or 10), 50)
     offset = max(0, int(args.get("offset") or 0))
@@ -185,6 +196,7 @@ async def run_search_journal(
             kinds=kinds,
             conversation_id=conversation_id,
             include_superseded=include_superseded,
+            include_invalidated=include_invalidated,
             text=repo_text_q,
             order=order,
             limit=chunk,
@@ -213,22 +225,12 @@ async def run_search_journal(
             exhausted = True
             break
 
-    page = collected[offset: offset + limit]
-    has_more = (not exhausted) or (len(collected) > offset + len(page))
+    annotated = await _annotate_journal_validity(db, collected)
+    annotated = _downgrade_stale_notes(annotated)
+    page = annotated[offset: offset + limit]
+    has_more = (not exhausted) or (len(annotated) > offset + len(page))
     out: dict[str, Any] = {
-        "notes": [
-            {
-                "id": j.id,
-                "conversation_id": j.conversation_id,
-                "note": j.note,
-                "entry_ids": list(j.entry_ids or []),
-                "tags": list(j.tags or []),
-                "source_kind": j.source_kind,
-                "superseded_by_id": j.superseded_by_id,
-                "created_at": j.created_at.isoformat() if j.created_at else None,
-            }
-            for j in page
-        ],
+        "notes": page,
         "count": len(page),
         "has_more": has_more,
     }
@@ -240,3 +242,110 @@ async def run_search_journal(
 def _note_matches_text(note: str | None, terms: list[str]) -> bool:
     haystack = (note or "").casefold()
     return any(term.casefold() in haystack for term in terms)
+
+
+async def _annotate_journal_validity(
+    db: AsyncSession,
+    rows: list[Journal],
+) -> list[dict[str, Any]]:
+    all_entry_ids: list[str] = []
+    for row in rows:
+        for entry_id in row.entry_ids or []:
+            if entry_id and entry_id not in all_entry_ids:
+                all_entry_ids.append(str(entry_id))
+    statuses = await entries_repo.list_journal_reference_statuses(db, all_entry_ids)
+    return [_journal_note_to_dict(row, statuses) for row in rows]
+
+
+def _journal_note_to_dict(
+    row: Journal,
+    statuses: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    entry_validity = _journal_entry_validity(row, statuses)
+    invalidated_at = getattr(row, "invalidated_at", None)
+    note = {
+        "id": row.id,
+        "conversation_id": row.conversation_id,
+        "note": row.note,
+        "entry_ids": list(row.entry_ids or []),
+        "tags": list(row.tags or []),
+        "source_kind": row.source_kind,
+        "superseded_by_id": row.superseded_by_id,
+        "invalidated_at": invalidated_at.isoformat() if invalidated_at else None,
+        "invalidated_by_id": getattr(row, "invalidated_by_id", None),
+        "invalidated_reason": getattr(row, "invalidated_reason", None),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "entry_validity": entry_validity,
+    }
+    if entry_validity["status"] == "stale":
+        note["validity_note"] = "引用实体已变更"
+    return note
+
+
+def _journal_entry_validity(
+    row: Journal,
+    statuses: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    entry_ids = [str(entry_id) for entry_id in row.entry_ids or [] if entry_id]
+    entries: list[dict[str, Any]] = []
+    stale_reasons: list[str] = []
+    stale_entry_ids: list[str] = []
+    for entry_id in entry_ids:
+        status = statuses.get(entry_id)
+        if status is None:
+            reason = "missing"
+            item_status = "stale"
+        elif status.get("entry_deleted_at") is not None:
+            reason = "entry_deleted"
+            item_status = "stale"
+        elif status.get("file_deleted_at") is not None:
+            reason = "file_deleted"
+            item_status = "stale"
+        elif _file_reingested_after_note(status.get("file_ingested_at"), row.created_at):
+            reason = "file_reingested_after_note"
+            item_status = "stale"
+        else:
+            reason = None
+            item_status = "current"
+        item: dict[str, Any] = {
+            "entry_id": entry_id,
+            "status": item_status,
+        }
+        if reason:
+            item["reason"] = reason
+            stale_entry_ids.append(entry_id)
+            if reason not in stale_reasons:
+                stale_reasons.append(reason)
+        ingested_at = status.get("file_ingested_at") if status else None
+        if ingested_at is not None:
+            item["file_ingested_at"] = ingested_at.isoformat()
+        entries.append(item)
+    if not entry_ids:
+        status = "unreferenced"
+    elif stale_entry_ids:
+        status = "stale"
+    else:
+        status = "current"
+    return {
+        "status": status,
+        "stale_entry_ids": stale_entry_ids,
+        "stale_reasons": stale_reasons,
+        "entries": entries,
+    }
+
+
+def _file_reingested_after_note(ingested_at: Any, note_created_at: Any) -> bool:
+    if ingested_at is None or note_created_at is None:
+        return False
+    return ingested_at > note_created_at
+
+
+def _downgrade_stale_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(
+        enumerate(notes),
+        key=lambda item: (
+            item[1].get("entry_validity", {}).get("status") == "stale",
+            item[0],
+        ),
+    )
+    return [note for _idx, note in ordered]

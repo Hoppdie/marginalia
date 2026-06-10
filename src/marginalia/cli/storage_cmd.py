@@ -23,9 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
-from typing import Literal
 
 
 _VALID = ("local", "mirror")
@@ -111,7 +109,7 @@ async def _run_migrate(
         rows = await files_repo.list_live_storage_keys(session)
 
     print(f"[migrate] {len(rows)} files to consider ({src} → {dst})")
-    for file_id, storage_key, sha256 in rows:
+    for file_id, storage_key, _sha256 in rows:
         # Skip rows already in the target shape (resumability). Local
         # UUID-flat keys have the form 'aa/bb/<uuid>'; mirror keys end
         # with a real filename including an extension and don't begin

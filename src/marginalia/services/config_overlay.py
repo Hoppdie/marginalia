@@ -43,6 +43,8 @@ _ALLOWED_FIELDS: frozenset[str] = frozenset({
     "read_compression_context_chars",
     "llm_ingest_concurrency",
     "worker_batch_size",
+    "maintenance_daily_token_budget",
+    "relation_background_vetting_enabled",
     # LLM defaults
     "llm_default_provider",
     "llm_default_api_key",
@@ -189,6 +191,7 @@ def validate_and_normalize(patch: dict[str, Any]) -> dict[str, Any]:
             "read_compression_context_chars",
             "llm_ingest_concurrency",
             "worker_batch_size",
+            "maintenance_daily_token_budget",
             "embedding_dimensions",
             "embedding_batch_size",
             "semantic_recall_limit",
@@ -206,6 +209,8 @@ def validate_and_normalize(patch: dict[str, Any]) -> dict[str, Any]:
                 lower, upper = 3, 100
             elif k in ("llm_ingest_concurrency", "worker_batch_size"):
                 upper = 32
+            elif k == "maintenance_daily_token_budget":
+                lower, upper = 0, 200_000_000
             elif k == "embedding_dimensions":
                 upper = 8192
             elif k == "embedding_batch_size":
@@ -227,6 +232,7 @@ def validate_and_normalize(patch: dict[str, Any]) -> dict[str, Any]:
             "read_compression_enabled",
             "semantic_recall_enabled",
             "rerank_enabled",
+            "relation_background_vetting_enabled",
         ):
             if isinstance(v, str):
                 v = v.strip().lower() in {"1", "true", "yes", "on"}

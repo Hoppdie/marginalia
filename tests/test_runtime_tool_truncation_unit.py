@@ -67,3 +67,17 @@ def test_overlay_validates_agent_execute_max_turns() -> None:
         except OverlayValidationError:
             continue
         raise AssertionError(f"expected validation error for {bad}")
+
+
+def test_overlay_accepts_maintenance_budget_zero_and_large_values() -> None:
+    from marginalia.services.config_overlay import validate_and_normalize
+
+    assert validate_and_normalize(
+        {"maintenance_daily_token_budget": "0"}
+    ) == {"maintenance_daily_token_budget": 0}
+    assert validate_and_normalize(
+        {"maintenance_daily_token_budget": "1000000"}
+    ) == {"maintenance_daily_token_budget": 1_000_000}
+    assert validate_and_normalize(
+        {"relation_background_vetting_enabled": "true"}
+    ) == {"relation_background_vetting_enabled": True}

@@ -45,6 +45,12 @@ WORKER_ENABLED=false
 # deployments can opt in.
 AUTO_LIFECYCLE_ENABLED=false
 
+# Rolling 24h token cap for low-priority background maintenance. 0 = unlimited.
+MAINTENANCE_DAILY_TOKEN_BUDGET=0
+
+# Batch relation vetting is optional; /discover vets directly hit edges lazily.
+RELATION_BACKGROUND_VETTING_ENABLED=false
+
 # LLM defaults — every profile (chat / reflect / ingest / vision / audio)
 # inherits these unless overridden by LLM_<PROFILE>_* keys.
 LLM_DEFAULT_PROVIDER=openai

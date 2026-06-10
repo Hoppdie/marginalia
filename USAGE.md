@@ -164,6 +164,17 @@ personal-library investigation case:
 - it can compare the full ReAct report workflow against one-shot RAG with
   `marginalia eval compare-report`.
 
+Metadata text search is indexed in both local and remote database modes:
+SQLite uses the local FTS5 trigram table, while Postgres uses native
+`to_tsvector` / `websearch_to_tsquery` expression GIN indexes. Chinese short
+terms that are too small for trigram tokenization are kept through a bounded
+LIKE fallback in mixed metadata queries.
+Journal recall validates referenced entries when it is read: notes that point
+at deleted entries or files reprocessed after the note was written are kept
+for audit, marked stale, and ranked behind current notes. Later reflections
+can also mark directly contradicted journal rows invalidated; active recall
+hides them unless `search_journal` is called with `include_invalidated=true`.
+
 The current evidence supports advertising it as a strong personal-library
 research agent, especially for source-grounded reports. It should not be
 described as general SOTA across all RAG benchmarks. The validated claim is
@@ -238,6 +249,7 @@ Run retrieval metrics after import:
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval run scifact --retriever search_metadata --k 10,50,100
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval run scifact --retriever semantic_recall --k 10,50,100
 MARGINALIA_HOME=./runtime/eval/scifact marginalia eval run scifact --retriever recall_knowledge --json report.json
+MARGINALIA_HOME=./runtime/eval/scifact marginalia eval ablation-run scifact --k 10,50,100 --json ablation-report.json
 ```
 
 Probe one final answer with a hard wall-clock budget:
@@ -253,7 +265,10 @@ hit@k answers whether at least one relevant document entered the candidate
 pool, candidate_recall@k answers how much labeled evidence entered it, and
 nDCG/MRR describe how early evidence appears. Use a dedicated
 `MARGINALIA_HOME` for external benchmarks to avoid mixing benchmark documents
-with your personal library. `eval answer` does not run the open-ended chat
+with your personal library. `eval ablation-run` runs a retrieval component
+matrix over metadata-only, relations, semantic recall, and rerank variants,
+then reports per-configuration deltas against metadata-only. `eval answer`
+does not run the open-ended chat
 agent loop; it retrieves, reads bounded evidence, makes one final-answer LLM
 call, and reports whether the answer cited a qrels-relevant document. Use
 `eval answer-run` to repeat that bounded probe across dataset queries and get
@@ -304,7 +319,29 @@ reranked top evidence directly.
 /tend <run_id>                 inspect a maintenance run
 ```
 
-Maintenance includes tag quality, catalog restructuring, lifecycle suggestions, relation mining, relation vetting, view proposals, entry-extra refresh, and pruning.
+Maintenance includes tag quality, catalog restructuring, lifecycle suggestions,
+relation mining, view proposals, entry-extra refresh, and pruning. Batch
+relation vetting is optional; `/discover` vets directly hit unjudged edges on
+demand, while `RELATION_BACKGROUND_VETTING_ENABLED=true` lets the periodic
+worker pre-vet relation edges ahead of time.
+
+### MCP Server
+
+Run a stdio MCP server when you want Claude Desktop or another MCP-capable
+agent to use Marginalia as a private-library backend:
+
+```bash
+marginalia mcp
+# or
+marginalia-mcp
+```
+
+Only read-only retrieval tools are exposed: `recall_knowledge`, `read_files`,
+`search_metadata`, `search_journal`, `read_entries_metadata`, `list_folder`,
+`list_catalogs`, `read_catalog`, `resolve_tag`, and `materialize_view`.
+Write-side tools and artifact generators are intentionally absent from the MCP
+surface. Configure the MCP client with the same `MARGINALIA_HOME`, database,
+storage, and optional provider environment variables you use for the CLI.
 
 ## 8. Asking Effective Questions
 
@@ -370,6 +407,14 @@ marginalia storage migrate --from local --to mirror
 
 Remote object storage for multi-host deployments. Use Postgres with S3; SQLite is not suitable for multiple writer processes.
 
+### Multi-device sync
+
+Do not sync a live `MARGINALIA_HOME` with Dropbox, Syncthing, iCloud Drive,
+OneDrive, or similar tools. SQLite databases and the mirror/local storage
+layout are not safe under concurrent file replication. Stop Marginalia before
+copying the directory for backup; for active multi-device use, run a remote
+server with Postgres and S3-compatible object storage.
+
 ## 11. Lifecycle
 
 Entries can be:
@@ -384,9 +429,13 @@ Automatic lifecycle transitions are off by default:
 
 ```ini
 AUTO_LIFECYCLE_ENABLED=false
+MAINTENANCE_DAILY_TOKEN_BUDGET=0
+RELATION_BACKGROUND_VETTING_ENABLED=false
 ```
 
-This is deliberate for personal libraries. Shared deployments can enable it to let background tasks demote or archive inactive material.
+This is deliberate for personal libraries. Shared deployments can enable
+automatic lifecycle changes, cap background LLM maintenance tokens, or opt into
+periodic relation pre-vetting.
 
 ## 12. Troubleshooting
 
@@ -481,7 +530,7 @@ For mirror storage:
 
 ## 13. Backup
 
-For SQLite + mirror/local storage, stop Marginalia and copy the whole `MARGINALIA_HOME` directory.
+For SQLite + mirror/local storage, stop Marginalia and copy the whole `MARGINALIA_HOME` directory. This is a backup operation, not live multi-device sync.
 
 Windows:
 

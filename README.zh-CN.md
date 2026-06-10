@@ -147,10 +147,31 @@ catalog、tag、view、metadata 和 `recall_knowledge` 缩小范围,再按需合
 /info <entry_id>                查看 entry 的用户可见 metadata + summary
 /download <entry_id|folder_id>  文件 → 字节;文件夹 → zip
 /export [<conv_id>]             把对话 + 引用打包成 zip
-/mode [quick|deep]              查看或切换 chat 模式
+/mode [auto|quick|deep]         查看或切换 chat 模式
 /clear  /  /new                 结束 / 开始 chat session
 /quit
 ```
+
+默认 `auto` 会让 planner 用纯文本 `BUDGET:` 控制线选择 quick/standard/deep
+预算，并在工具仍产出新证据时自动升级；`/mode quick` 和 `/mode deep` 仍保留为
+手动强制模式。
+
+## MCP Server
+
+也可以把 Marginalia 作为 stdio MCP server 暴露给 Claude Desktop 或其他
+支持 MCP 的 agent:
+
+```bash
+marginalia mcp
+# 或
+marginalia-mcp
+```
+
+MCP 面只暴露只读检索工具,包括 `recall_knowledge`、`search_metadata`、
+`search_journal`、`read_entries_metadata`、`read_files`、`list_folder`、
+`list_catalogs`、`read_catalog`、`resolve_tag` 和 `materialize_view`。
+写入类工具和生成 artifact 的工具不会暴露。MCP 客户端配置里使用和 CLI
+相同的 `MARGINALIA_HOME`、数据库、存储以及可选 provider 环境变量即可。
 
 一次对话 turn 渲染成事件流:
 
@@ -217,10 +238,23 @@ API key。默认 embedding 配置面向百炼/DashScope 的 `text-embedding-v4`;
 维度后的全量重嵌入。ingest 成功后也会在 semantic recall 已配置时刷新该文件的
 semantic 向量。
 
+metadata 文本检索在 SQLite 和 Postgres 两种部署形态下都有索引:SQLite 使用
+FTS5 trigram 表;Postgres 使用 `to_tsvector` / `websearch_to_tsquery`
+表达式 GIN 索引。中文双字词这类短 CJK 查询不会再被 trigram 路径静默丢弃,
+混合查询里会用有界 LIKE fallback 补回。
+
+journal 召回会在读取时校验引用 entry:如果旧笔记指向已删除 entry,或源文件
+在笔记写入后重新 ingest,笔记仍保留用于审计,但会标记为 stale 并排在当前
+有效笔记之后。后续 reflect 如果发现同一 entry 的旧 journal 结论被直接矛盾,
+会把旧行标记为 invalidated;默认活跃召回会隐藏它,审计查询仍可显式包含。
+
 ### 评测结论
 
 最新本地 SciFact 评测支持这个方向,但不把它包装成通用 SOTA:
 
+- `marginalia eval ablation-run` 可以输出 retrieval 组件消融矩阵,
+  对比 metadata-only、relations、semantic recall、rerank 和 full recall
+  的候选池指标差异。
 - 300 条 retrieval,`recall_knowledge` + rerank top-80: MRR 0.7226,
   hit@10 0.8800,hit@100 0.9133。
 - 300 条 bounded answer-run,rerank top-80 + quota: evidence hit 0.8667,
@@ -234,9 +268,9 @@ semantic 向量。
 ### Discovery(减少 agent 循环次数)
 
 调查员一旦找到一个相关 entry,discovery 层立即把可能的邻居塞给它——
-下一步不需要再烧一轮 search + read_files。三个 miner + 一个 LLM 关卡
-喂养 `entry_relations`;random walk 服务消费 vetted 后的图;结果预填
-进 search 和 metadata 响应。
+下一步不需要再烧一轮 search + read_files。三个 miner 先写廉价 raw signal;
+`/discover` 真正命中未判断边时再按需调用 LLM vet 并缓存 verdict。
+search 和 metadata 预填只读已经缓存的 vetted 图,不会在普通浏览时触发 LLM。
 
 ```
 mine_session_cooccurrence    journal 里 X 和 Y 在同一对话中被提及
@@ -245,7 +279,7 @@ mine_citation_graph          X 和 Y 在同一 agent 答案中被同时引用
                 ↓
        entry_relations(原始,带 source_kind)
                 ↓
-   vet_relations              LLM 关卡,逐对判断 → vetted=True/False
+   /discover 按需 vet          LLM 关卡,逐对判断 → vetted=True/False
                 ↓
        entry_relations.vetted=True(干净的图)
                 ↓
@@ -255,8 +289,8 @@ mine_citation_graph          X 和 Y 在同一 agent 答案中被同时引用
    search/get_metadata.related_entries   预填 top-3 / top-8
 ```
 
-Miner + vet 由 periodic dispatcher 驱动(默认每天;`/tend` 也会触发)。
-Random walk 是查询时的只读操作。
+Miner 由 periodic dispatcher 驱动。批量 `vet_relations` 默认关闭;如需提前
+批量判断关系,设置 `RELATION_BACKGROUND_VETTING_ENABLED=true` 或手动运行 `/tend`。
 
 完整设计见 [`DESIGN.md`](DESIGN.md)。
 
@@ -282,7 +316,8 @@ GET  /health                           liveness probe(无版本)
 渲染的。
 
 请求体支持 `{ "query": "...", "mode": "deep" }` 或
-`{ "query": "...", "mode": "quick" }`;省略 `mode` 时默认走深入调查。
+`{ "query": "...", "mode": "quick" }`;省略 `mode` 时默认走 `auto`,
+由 planner 选择预算档位。
 
 ## 配置
 
@@ -298,6 +333,8 @@ STORAGE_BACKEND=mirror           # 默认。文件以可读文件夹形式存:
                                  # 高频改写场景快约 5 倍)/ 's3'
 
 WORKER_ENABLED=true              # embedded 模式默认开
+MAINTENANCE_DAILY_TOKEN_BUDGET=0 # 后台维护 24 小时滚动 token 上限;0 = 不限制
+RELATION_BACKGROUND_VETTING_ENABLED=false
 
 LLM_DEFAULT_PROVIDER=openai      # openai / openai-compatible / anthropic
 LLM_DEFAULT_API_KEY=sk-...
@@ -328,6 +365,13 @@ MARGINALIA_SERVER=               # 非空 = 远程模式,跳过 embedded
 
 OpenAI 兼容 endpoint(Together / Groq / DeepSeek / 本地 vLLM / ollama)
 通过 `LLM_*_BASE_URL` 切换。
+
+`MAINTENANCE_DAILY_TOKEN_BUDGET` 只限制后台维护 LLM 用量。预算耗尽时,
+`restructure_catalogs`、`vet_relations`、`propose_views` 会延后到后续 tick;
+上传 ingest 与对话 reflect 不受这个预算限制。
+
+关系发现默认 lazy:`/discover` 命中未判断边时才调用 LLM vet 并写回缓存。
+如需后台提前批量 vet,设置 `RELATION_BACKGROUND_VETTING_ENABLED=true`。
 
 长调研答案如果在最终回答阶段撞到模型 token 上限,运行时会在服务端续写,
 GUI 仍然只收到一个合并后的 `answer` 事件。可用
@@ -360,6 +404,8 @@ HTTP 不经过 socket——`httpx.ASGITransport` 直接调 ASGI app。99% 场景
 ```bash
 uvicorn marginalia.main:app --host 0.0.0.0 --port 8000
 marginalia --server http://server.lan:8000
+# 如果 server 设置了 MARGINALIA_API_TOKEN:
+marginalia --server http://server.lan:8000 --api-token "$MARGINALIA_API_TOKEN"
 # 或写入持久配置: MARGINALIA_SERVER=http://server.lan:8000 -> ~/.marginalia/.env
 ```
 
@@ -377,6 +423,16 @@ Compose 在 api 启动时跑 `alembic upgrade head`,通过一次性 init
 容器创建 MinIO bucket。卷(`pgdata` / `miniodata` / `margdata`)
 跨重启持久化。
 
+Compose 默认只把 API 和 MinIO 控制台绑定到 `127.0.0.1`。如果要主动暴露到
+局域网,请设置 `MARGINALIA_API_TOKEN`,并在 CLI 或桌面连接设置中发送
+`Authorization: Bearer <token>`。
+
+### 多设备同步
+
+不要用 Dropbox、Syncthing、iCloud Drive、OneDrive 等文件同步工具同步正在
+运行的 `MARGINALIA_HOME`。SQLite 和 mirror/local 存储在并发复制下可能损坏。
+多设备共享请使用 Postgres + S3 兼容对象存储的 remote 部署形态。
+
 ## 文档
 
 - [USAGE.zh-CN.md](USAGE.zh-CN.md): 使用和运维手册。
@@ -386,6 +442,7 @@ Compose 在 api 启动时跑 `alembic upgrade head`,通过一次性 init
 ## 开发
 
 ```bash
+uv run ruff check src tests
 .venv/Scripts/python tests/test_agent_e2e.py
 for t in tests/test_*_e2e.py; do .venv/Scripts/python "$t"; done
 ```

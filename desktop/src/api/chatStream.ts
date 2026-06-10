@@ -13,7 +13,7 @@
  *  decide how to decode per type.
  */
 import type { ChatEvent, ChatEventType, ChatMode } from "@/types/api";
-import { getBaseUrl, resolveTauriBaseUrl } from "@/api/client";
+import { authHeaders, getBaseUrl, resolveTauriBaseUrl } from "@/api/client";
 
 export interface ChatStreamOptions {
   signal?: AbortSignal;
@@ -34,8 +34,9 @@ export async function streamChat(
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      ...authHeaders(),
     },
-    body: JSON.stringify({ query, mode: opts.mode ?? "deep" }),
+    body: JSON.stringify({ query, mode: opts.mode ?? "auto" }),
     signal: opts.signal,
   });
   if (!res.ok || !res.body) {

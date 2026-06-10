@@ -145,7 +145,7 @@ marginalia> /export
 **`thinking` 卡很久**:LLM 在生成最终答案,正常等。
 
 **循环出现同一个 `calling X(...)`**:agent 在重复调同一工具,框架的
-doom-loop 保护会在 6 次内强制收尾。如果反复出现,看 §8 故障处理。
+doom-loop 保护会在 6 次内强制收尾。如果反复出现,看 §9 故障处理。
 
 **末尾的 `[tokens in=X out=Y tools=N llm_calls=M ...]`**:这一轮的
 计费明细。
@@ -243,7 +243,24 @@ marg export <session_id> --all --bundle -o session.zip
 
 ---
 
-## 8. 故障处理
+## 8. 检索能力边界
+
+metadata 文本检索在 SQLite 和 Postgres 两种部署形态下都有索引:SQLite 使用
+FTS5 trigram 表;Postgres 使用 `to_tsvector` / `websearch_to_tsquery`
+表达式 GIN 索引。中文双字词这类短 CJK 查询不会再被 trigram 路径静默丢弃,
+混合查询里会用有界 LIKE fallback 补回。
+
+journal 召回会在读取时校验引用 entry:如果旧笔记指向已删除 entry,或源文件
+在笔记写入后重新 ingest,笔记仍保留用于审计,但会标记为 stale 并排在当前
+有效笔记之后。后续 reflect 如果发现同一 entry 的旧 journal 结论被直接矛盾,
+会把旧行标记为 invalidated;默认活跃召回会隐藏它,审计查询仍可显式包含。
+
+外部 BEIR-style 数据集和 `marginalia eval` 命令的完整说明见
+[`README.zh-CN.md`](README.zh-CN.md)。
+
+---
+
+## 9. 故障处理
 
 ### 文件卡在 processing
 
@@ -293,7 +310,7 @@ marginalia> /info <entry_id>
 
 ---
 
-## 9. 备份与迁移
+## 10. 备份与迁移
 
 ### 单机备份(SQLite + 本地 / mirror 存储)
 
@@ -333,9 +350,11 @@ marginalia storage migrate --to s3
 
 ---
 
-## 10. 多机共享一个库
+## 11. 多机共享一个库
 
-SQLite 不支持多进程写,要多机必须先迁到 Postgres + S3。
+SQLite 不支持多进程写,要多机必须先迁到 Postgres + S3。不要用
+Dropbox、Syncthing、iCloud Drive、OneDrive 等文件同步工具同步正在运行的
+`MARGINALIA_HOME`; SQLite 和 mirror/local 存储在并发复制下可能损坏。
 
 **A 机(server)**:
 
@@ -363,19 +382,28 @@ docker compose up -d
 会启动 api + worker + Postgres + MinIO。`alembic upgrade head` 在 api
 启动时自动跑,MinIO bucket 由一次性 init 容器创建。
 
+Compose 默认只把 API 和 MinIO 控制台绑定到 `127.0.0.1`。如果要主动暴露到
+局域网,请设置 `MARGINALIA_API_TOKEN`,并让 CLI/桌面端发送
+`Authorization: Bearer <token>`。
+
 ```bash
 marginalia --server http://localhost:8000
 ```
 
 ---
 
-## 11. 看后台在干什么
+## 12. 看后台在干什么
 
 ```
 marginalia> /tend
    ↳ 触发一次完整的离线维护周期(normalize_tags / enrich_tags / restructure /
      suggest_demotion 等),实时打印每个任务的产出
 ```
+
+关系挖掘默认是 lazy:后台 miner 先写廉价关系信号,`/discover` 命中未判断边
+时再调用 LLM vet 并缓存结果。需要后台提前批量判断时,设置
+`RELATION_BACKGROUND_VETTING_ENABLED=true`;`MAINTENANCE_DAILY_TOKEN_BUDGET`
+可限制低优先后台 LLM 维护用量。
 
 被 demoted / archived 的 entry 默认不参与新查询的检索范围。想看哪些
 被自动降级了:
@@ -393,7 +421,27 @@ marginalia> /restore <entry_id>
 
 ---
 
-## 12. 退出
+## 13. MCP Server
+
+需要让 Claude Desktop 或其他 MCP-capable agent 调用你的 Marginalia 库时,
+运行 stdio MCP server:
+
+```bash
+marginalia mcp
+# 或
+marginalia-mcp
+```
+
+MCP 面只暴露只读检索工具:`recall_knowledge`、`read_files`、
+`search_metadata`、`search_journal`、`read_entries_metadata`、
+`list_folder`、`list_catalogs`、`read_catalog`、`resolve_tag` 和
+`materialize_view`。写入类工具、artifact 生成工具、SQL/log/container
+分析工具不会暴露。MCP 客户端使用和 CLI 相同的 `MARGINALIA_HOME`、数据库、
+存储和可选 provider 环境变量。
+
+---
+
+## 14. 退出
 
 ```
 marginalia> /quit

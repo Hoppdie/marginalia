@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
-_TEST_ROOT = Path(__file__).resolve().parent / "_sessions_list_preview_e2e_data"
-if _TEST_ROOT.exists():
-    shutil.rmtree(_TEST_ROOT)
+_TEST_PARENT = Path(os.environ.get("MARGINALIA_TEST_TMP", Path(__file__).resolve().parent))
+_TEST_ROOT = _TEST_PARENT / f"_sessions_list_preview_e2e_data_{os.getpid()}_{uuid4().hex[:8]}"
 _TEST_ROOT.mkdir(parents=True)
 os.environ["MARGINALIA_HOME"] = str(_TEST_ROOT)
 os.environ["STORAGE_BACKEND"] = "local"
@@ -130,7 +129,7 @@ async def test_preview_fallback() -> None:
     assert by_id[seeded["b"]]["mode"] == "quick"
     # C: ghost — no conversations, preview stays empty (no spurious fill)
     assert by_id[seeded["c"]]["preview"] == ""
-    assert by_id[seeded["c"]]["mode"] == "deep"
+    assert by_id[seeded["c"]]["mode"] == "auto"
     print("[1] preview fallback: legacy filled, modern preserved, ghost stays empty")
 
 

@@ -722,7 +722,9 @@ class PdfPipeline(Pipeline):
         # not ingest; keep each direct vision call bounded.
         try:
             from pypdf import PdfReader
-            total_pages = len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+            total_pages = await asyncio.to_thread(
+                lambda: len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+            )
         except Exception:  # noqa: BLE001
             total_pages = 0
         ps_arg = args.get("page_start")
@@ -1628,7 +1630,7 @@ def extract_images(
             continue
 
         page_kept = 0
-        for fig_idx, img in enumerate(page_images, start=1):
+        for _fig_idx, img in enumerate(page_images, start=1):
             data = img.data or b""
             if len(data) < MIN_IMAGE_BYTES:
                 continue

@@ -8,6 +8,7 @@ unknown parameters so raw citation metadata does not leak into renderers.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 
@@ -77,6 +78,34 @@ def parse_citation_footnote_match(match: re.Match[str]) -> CitationFootnote:
 
 def unescape_citation_quote(value: str) -> str:
     return value.replace(r"\"", '"').replace(r"\\", "\\")
+
+
+def quote_matches_source_text(source_text: str, quote: str) -> bool:
+    """Return whether `quote` appears in source text after loose normalization.
+
+    Citation quotes are authored by an LLM but should still be copied from the
+    original source. We tolerate formatting differences that commonly appear
+    across extractors and renderers: Unicode compatibility forms, whitespace,
+    punctuation, and case. We do not do fuzzy edit-distance matching here; a
+    verified quote must still preserve the underlying characters in order.
+    """
+    needle = normalize_quote_match_text(quote)
+    if not needle:
+        return False
+    return needle in normalize_quote_match_text(source_text)
+
+
+def normalize_quote_match_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text)
+    chars: list[str] = []
+    for ch in normalized:
+        if ch.isspace():
+            continue
+        category = unicodedata.category(ch)
+        if category.startswith(("P", "Z", "C")):
+            continue
+        chars.append(ch.casefold())
+    return "".join(chars)
 
 
 def _parse_fields(text: str) -> dict[str, str]:

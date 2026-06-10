@@ -25,9 +25,8 @@ import mimetypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.db.engine import get_session_factory
 from marginalia.repositories import audit_events as audit_events_repo
@@ -36,11 +35,9 @@ from marginalia.services.entries import (
     move_entry,
     rename_entry,
     soft_delete_entry,
-    _build_folder_display_path,
 )
 from marginalia.services.folders import resolve_or_create_folder
 from marginalia.services.scan import ScanReport
-from marginalia.services.upload import upload as upload_service
 from marginalia.storage import MirrorStorage, get_storage
 from marginalia.tasks.enqueue import enqueue
 from marginalia.tasks.kinds import KIND_INGEST_FILE

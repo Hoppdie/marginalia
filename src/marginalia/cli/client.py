@@ -13,10 +13,13 @@ endpoint is the only exception.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal, Mapping
+from typing import Any, AsyncIterator
 
 import httpx
+
+from marginalia.agent.types import ChatMode
 
 
 @dataclass(slots=True)
@@ -39,12 +42,15 @@ class MarginaliaClient:
         self,
         *,
         base_url: str = "http://127.0.0.1:8000",
+        api_token: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 60.0,
     ) -> None:
         self.base_url = base_url
+        token = api_token if api_token is not None else os.environ.get("MARGINALIA_API_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else None
         self._http = httpx.AsyncClient(
-            base_url=base_url, transport=transport, timeout=timeout,
+            base_url=base_url, transport=transport, timeout=timeout, headers=headers,
         )
 
     async def aclose(self) -> None:
@@ -143,7 +149,7 @@ class MarginaliaClient:
         session_id: str,
         query: str,
         *,
-        mode: Literal["deep", "quick"] = "deep",
+        mode: ChatMode = "auto",
     ) -> AsyncIterator[ChatEvent]:
         """Stream agent events for one chat turn.
 

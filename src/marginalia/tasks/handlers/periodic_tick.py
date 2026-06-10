@@ -40,8 +40,14 @@ from marginalia.tasks.kinds import (
     KIND_PERIODIC_TICK,
     KIND_SUGGEST_LIFECYCLE,
     KIND_SUMMARIZE_SESSION,
+    KIND_VET_RELATIONS,
     PERIODIC_INTERVALS,
     task_handler,
+)
+from marginalia.tasks.maintenance_budget import (
+    MAINTENANCE_BUDGET_SKIP_REASON,
+    read_maintenance_budget,
+    should_defer_for_budget,
 )
 
 log = logging.getLogger(__name__)
@@ -80,9 +86,18 @@ async def handle_periodic_tick(payload: Mapping[str, Any]) -> None:
         skipped_recent: list[str] = []
         skipped_inflight: list[str] = []
         skipped_disabled: list[str] = []
+        skipped_budget: list[dict[str, Any]] = []
+        maintenance_budget = await read_maintenance_budget(
+            session,
+            settings=settings,
+            now=now,
+        )
 
         for kind, interval in PERIODIC_INTERVALS.items():
             if kind == KIND_SUGGEST_LIFECYCLE and not settings.auto_lifecycle_enabled:
+                skipped_disabled.append(kind)
+                continue
+            if kind == KIND_VET_RELATIONS and not settings.relation_background_vetting_enabled:
                 skipped_disabled.append(kind)
                 continue
 
@@ -96,6 +111,19 @@ async def handle_periodic_tick(payload: Mapping[str, Any]) -> None:
 
             if last_done_at is not None and (now - last_done_at) < interval:
                 skipped_recent.append(kind)
+                continue
+
+            if await should_defer_for_budget(
+                session,
+                kind=kind,
+                state=maintenance_budget,
+            ):
+                skipped_budget.append({
+                    "kind": kind,
+                    "reason": MAINTENANCE_BUDGET_SKIP_REASON,
+                    "used": maintenance_budget.used,
+                    "limit": maintenance_budget.limit,
+                })
                 continue
 
             task = await enqueue(
@@ -150,6 +178,8 @@ async def handle_periodic_tick(payload: Mapping[str, Any]) -> None:
                 "skipped_recent": skipped_recent,
                 "skipped_inflight": skipped_inflight,
                 "skipped_disabled": skipped_disabled,
+                "skipped_budget": skipped_budget,
+                "maintenance_budget": maintenance_budget.to_detail(),
                 "next_tick_at": next_run.isoformat(),
             },
         )

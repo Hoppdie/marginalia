@@ -64,6 +64,8 @@ def server_settings() -> dict[str, Any]:
         "worker_enabled": s.worker_enabled,
         "worker_batch_size": s.worker_batch_size,
         "auto_lifecycle_enabled": s.auto_lifecycle_enabled,
+        "maintenance_daily_token_budget": s.maintenance_daily_token_budget,
+        "relation_background_vetting_enabled": s.relation_background_vetting_enabled,
         "default_on_conflict": s.default_on_conflict,
         "agent_plan_max_tokens": s.agent_plan_max_tokens,
         "agent_execute_max_tokens": s.agent_execute_max_tokens,

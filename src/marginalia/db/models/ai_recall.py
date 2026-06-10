@@ -101,6 +101,11 @@ class Journal(Base, IdMixin):
     points forward to the newer. Active-insight queries filter
     `WHERE superseded_by_id IS NULL`.
 
+    `invalidated_*` records contradiction-based fact invalidation. Unlike
+    supersession, it can apply to either journal tier when a later
+    reflect_turn finds that the earlier note is no longer true. Default
+    recall hides invalidated rows but keeps them for audit.
+
     `summarized_journal_ids` (insight only) is the list of reflect_turn
     journal ids that summarize_session distilled into this insight —
     answers "which raw bullets did this insight come from?" for audit
@@ -115,6 +120,7 @@ class Journal(Base, IdMixin):
         Index("ix_journal_kind_created", "source_kind", "created_at"),
         Index("ix_journal_active_created", "superseded_by_id", "created_at"),
         Index("ix_journal_kind_active_created", "source_kind", "superseded_by_id", "created_at"),
+        Index("ix_journal_invalidated_created", "invalidated_at", "created_at"),
         CheckConstraint(
             _in_clause("source_kind", JOURNAL_SOURCE_KINDS),
             name="source_kind",
@@ -144,5 +150,17 @@ class Journal(Base, IdMixin):
     )
     summarized_journal_ids: Mapped[Any | None] = mapped_column(
         JSON, nullable=True, default=None,
+    )
+    invalidated_at: Mapped[datetime | None] = mapped_column(
+        UtcDateTime(), nullable=True, default=None,
+    )
+    invalidated_by_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("journal.id", ondelete="SET NULL"),
+        nullable=True,
+        default=None,
+    )
+    invalidated_reason: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None,
     )
     created_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)

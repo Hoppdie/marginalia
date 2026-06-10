@@ -7,6 +7,9 @@
 #
 # .env (next to this file) must define LLM_DEFAULT_API_KEY at minimum.
 # Other LLM_* overrides are read by Settings via env passthrough.
+# Published ports bind to 127.0.0.1 by default. To expose the API or
+# MinIO console on a LAN, change the host bindings deliberately and set
+# MARGINALIA_API_TOKEN for the API service.
 
 name: marginalia
 
@@ -36,7 +39,7 @@ services:
     volumes:
       - miniodata:/data
     ports:
-      - "9001:9001"  # web console (optional, useful for poking around)
+      - "127.0.0.1:9001:9001"  # web console (optional, useful for local inspection)
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -84,10 +87,11 @@ services:
       LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}
       LLM_DEFAULT_API_KEY: ${LLM_DEFAULT_API_KEY:?set LLM_DEFAULT_API_KEY in .env}
       LLM_DEFAULT_BASE_URL: ${LLM_DEFAULT_BASE_URL:-}
+      MARGINALIA_API_TOKEN: ${MARGINALIA_API_TOKEN:-}
     volumes:
       - margdata:/data
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s

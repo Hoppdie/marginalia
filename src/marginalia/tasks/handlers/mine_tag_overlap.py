@@ -93,7 +93,7 @@ async def handle_mine_tag_overlap(payload: Mapping[str, Any]) -> None:
         #    over-popular tags. Use a set so a pair seeded from multiple
         #    tags is only scored once.
         candidate_pairs: set[tuple[str, str]] = set()
-        for tag_id, entries in tag_entries.items():
+        for _tag_id, entries in tag_entries.items():
             if len(entries) < 2 or len(entries) > max_fanout:
                 continue
             sorted_entries = sorted(entries)

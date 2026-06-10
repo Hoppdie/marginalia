@@ -9,7 +9,6 @@ from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
     Index,
-    Integer,
     JSON,
     String,
     Text,

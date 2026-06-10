@@ -29,7 +29,7 @@ from marginalia.db.models import Conversation, Session
 from marginalia.utils.ids import new_id
 
 
-CHAT_MODES = {"deep", "quick"}
+CHAT_MODES = {"auto", "deep", "quick"}
 
 
 def _utcnow() -> datetime:

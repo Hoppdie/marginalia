@@ -51,6 +51,7 @@ dependencies = [
 [project.scripts]
 marginalia = "marginalia.cli.repl:main"
 marginalia-worker = "marginalia.worker:main"
+marginalia-mcp = "marginalia.mcp_server:main"
 
 [project.optional-dependencies]
 semantic = [
@@ -61,6 +62,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "fpdf2>=2.8",
     "moto[s3]>=5.0",
+    "ruff>=0.8",
 ]
 
 [build-system]
@@ -89,3 +91,60 @@ exclude = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".git",
+    ".venv",
+    ".codex-pycache",
+    ".codex-run",
+    "desktop/node_modules",
+    "desktop/src-tauri/target",
+    "dist",
+    "runtime",
+    "tests/_*_e2e_data",
+    "tests/_*_e2e_*",
+    "tests/_e2e_data",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "BLE", "ASYNC"]
+ignore = [
+    # Existing code predates the lint gate and uses long literals/prompts.
+    # Keep line-length advisory until the mechanical cleanup is worth doing.
+    "E501",
+    # FastAPI dependency injection intentionally calls Depends()/Query() in
+    # signatures; B008 is noisy for this framework style.
+    "B008",
+    # Existing HTTP handlers raise framework exceptions directly in except
+    # blocks. Narrowing the chaining policy is separate cleanup work.
+    "B904",
+    # The existing codebase commonly zips same-length in-memory lists in
+    # evaluation and embedding code. Enforcing strict= everywhere is a larger
+    # mechanical cleanup than this lint baseline needs.
+    "B905",
+    # Broad exception cleanup is tracked as a separate upgrade-plan item.
+    "BLE001",
+    # The project uses asyncio plus pathlib in request/setup code. Keep
+    # flake8-async's stricter anyio/trio path guidance out of the baseline.
+    "ASYNC109",
+    "ASYNC230",
+    "ASYNC240",
+    "ASYNC250",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = [
+    # Legacy e2e modules set environment variables before importing the app.
+    "E402",
+    # Script-style e2e setup often uses compact semicolon sequencing.
+    "E702",
+    "B007",
+    "B011",
+    # Historical tests carry a few unused imports/locals and f-string prints.
+    "F401",
+    "F541",
+    "F841",
+]

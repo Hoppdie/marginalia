@@ -40,6 +40,7 @@ import type {
 } from "@/types/api";
 
 const STORAGE_KEY = "marginalia.api_base";
+const TOKEN_STORAGE_KEY = "marginalia.api_token";
 
 function isTauri(): boolean {
   if (typeof window === "undefined") return false;
@@ -93,6 +94,16 @@ export function setBaseUrl(url: string) {
 export function getBaseUrl() {
   return _base;
 }
+export function setApiToken(token: string) {
+  if (typeof window === "undefined") return;
+  const v = token.trim();
+  if (v) window.localStorage?.setItem(TOKEN_STORAGE_KEY, v);
+  else window.localStorage?.removeItem(TOKEN_STORAGE_KEY);
+}
+export function getApiToken() {
+  if (typeof window === "undefined") return "";
+  return window.localStorage?.getItem(TOKEN_STORAGE_KEY) || "";
+}
 
 export class ApiError extends Error {
   status: number;
@@ -115,6 +126,7 @@ async function _request<T>(
       ...(init.body && !(init.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
+      ...authHeaders(),
       ...(init.headers || {}),
     },
   });
@@ -272,6 +284,8 @@ export const uploads = {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${_base}/v1/upload?${params.toString()}`);
+      const token = getApiToken();
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && opts.onProgress) {
           opts.onProgress(e.loaded, e.total);
@@ -300,6 +314,11 @@ export const uploads = {
 
 function safeParseJson(s: string): unknown {
   try { return JSON.parse(s); } catch { return s; }
+}
+
+export function authHeaders(): Record<string, string> {
+  const token = getApiToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 // ---- search / discover ----------------------------------------------------
