@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.4-rc.2 - 2026-06-10
+
 ### Added
 
 - Optional API bearer authentication via `MARGINALIA_API_TOKEN`, with CLI and

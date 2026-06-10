@@ -269,6 +269,14 @@ jobs:
             found { print }
           ' CHANGELOG.md > release-changelog.md
 
+          if [ ! -s release-changelog.md ] && [[ "$TAG" == *-* ]]; then
+            awk '
+              $0 ~ "^## Unreleased([[:space:]]|$)" { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md > release-changelog.md
+          fi
+
           {
             echo "## Highlights"
             echo
