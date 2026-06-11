@@ -90,10 +90,9 @@ Rules:
 - `quote` is preferred whenever source text exists.
 - `page` is only for PDF physical pages, not printed page labels guessed from the document body.
 - PDF display links try quote-location first, then fall back to page/page-label mapping.
-- Live display marks quote-bearing footnotes with
-  `quote_status=verified|unverified`; verification checks the cited entry's
-  original readable text with whitespace/punctuation normalization. Failed
-  verification does not remove the answer.
+- Live display shows the cited quote excerpt and reason, but hides raw
+  citation metadata and internal quote-status markers; failed quote lookup
+  does not remove the answer.
 - Multiple evidence locations require multiple footnotes.
 
 The raw response is persisted; live display rewrites footnotes to entry links.

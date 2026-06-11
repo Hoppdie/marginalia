@@ -1263,7 +1263,7 @@ wheels = [
 
 [[package]]
 name = "marginalia"
-version = "0.2.4rc1"
+version = "0.2.4"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
@@ -1282,11 +1282,7 @@ dependencies = [
     { name = "openpyxl" },
     { name = "pillow" },
     { name = "prompt-toolkit" },
-    { name = "py7zz", version = "1.1.5", source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-macosx_10_9_universal2.whl" }, marker = "sys_platform == 'darwin'" },
-    { name = "py7zz", version = "1.1.5", source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux1_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "py7zz", version = "1.1.5", source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux2014_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "py7zz", version = "1.1.5", source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_amd64.whl" }, marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
-    { name = "py7zz", version = "1.1.5", source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
+    { name = "py7zz" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pypdf" },
@@ -1330,11 +1326,7 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
-    { name = "py7zz", marker = "sys_platform == 'darwin'", url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-macosx_10_9_universal2.whl" },
-    { name = "py7zz", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux2014_aarch64.whl" },
-    { name = "py7zz", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux1_x86_64.whl" },
-    { name = "py7zz", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_amd64.whl" },
-    { name = "py7zz", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'", url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_arm64.whl" },
+    { name = "py7zz", specifier = ">=1.3.1" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pypdf", specifier = ">=5.0" },
@@ -1869,133 +1861,21 @@ wheels = [
 
 [[package]]
 name = "py7zz"
-version = "1.1.5"
-source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-macosx_10_9_universal2.whl" }
-resolution-markers = [
-    "sys_platform == 'darwin'",
-]
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "packaging", marker = "sys_platform == 'darwin'" },
-    { name = "requests", marker = "sys_platform == 'darwin'" },
-    { name = "rich", marker = "sys_platform == 'darwin'" },
-    { name = "typer", marker = "sys_platform == 'darwin'" },
+    { name = "packaging" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "typer" },
 ]
 wheels = [
-    { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-macosx_10_9_universal2.whl", hash = "sha256:b1800d52f172e3fced4b3e5f772176077e4b32787660ce6af44fd01d2df8562b" },
+    { url = "https://files.pythonhosted.org/packages/53/c2/ec57d4e4b700d396df8e700f2b76c1f01499a4ac14932fb4585ec2b80f30/py7zz-1.3.1-py3-none-macosx_10_9_universal2.whl", hash = "sha256:2a58c011d5ded4206161aa7259530c8c30a22aaf3626f93efaee8342b8066292", size = 2706410, upload-time = "2026-06-06T05:52:16.228Z" },
+    { url = "https://files.pythonhosted.org/packages/42/34/59324f782f3629c00843161e830eade2582afb6b4c1be52b79608546ea86/py7zz-1.3.1-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ce25c9bb98fb2406780026d8504bc028fbad5a7569024b3fa75d6d7cfcb204ec", size = 1291164, upload-time = "2026-06-06T05:52:18.163Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/78/c596f90b2346c108c332a15fc988ec272b446dfc3584c2b827b987da4589/py7zz-1.3.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b59d079ba4623bfbc7687061ed384fe000ba4ac851be31d8b29bc9ddeee92d69", size = 1403453, upload-time = "2026-06-06T05:52:19.944Z" },
+    { url = "https://files.pythonhosted.org/packages/12/58/c9f8a2545da3fd2f2033b5ad71965db02b7ecd52256d3b650548be3767eb/py7zz-1.3.1-py3-none-win_amd64.whl", hash = "sha256:d45f278ee39cb067bb0ac2b8d6fbd6538cdff6e4ceb2a2817b63384e076dc0c6", size = 1219244, upload-time = "2026-06-06T05:52:22.305Z" },
+    { url = "https://files.pythonhosted.org/packages/48/da/afc103a6b0458270ec153c4c91181d054735c3bb3c7174f9a6337e87d986/py7zz-1.3.1-py3-none-win_arm64.whl", hash = "sha256:80902aaba149c06399d80da047a75cd60557cb29cd2c81c4afb7b28239a8ea82", size = 1145393, upload-time = "2026-06-06T05:52:24.108Z" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "packaging", specifier = ">=25.0" },
-    { name = "requests", specifier = ">=2.32.4" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "typer", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "py7zz"
-version = "1.1.5"
-source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux1_x86_64.whl" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-]
-dependencies = [
-    { name = "packaging", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "requests", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "rich", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "typer", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-wheels = [
-    { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux1_x86_64.whl", hash = "sha256:be600b664bd6d672cc732e400e47bec16bbf4d87954132bea726fb7e1ba3829e" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "packaging", specifier = ">=25.0" },
-    { name = "requests", specifier = ">=2.32.4" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "typer", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "py7zz"
-version = "1.1.5"
-source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux2014_aarch64.whl" }
-resolution-markers = [
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-]
-dependencies = [
-    { name = "packaging", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "requests", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "rich", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "typer", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-]
-wheels = [
-    { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-manylinux2014_aarch64.whl", hash = "sha256:d77553391eb830d768a664af958de7a03513cff3d007f8d546a74a577df5e9f5" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "packaging", specifier = ">=25.0" },
-    { name = "requests", specifier = ">=2.32.4" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "typer", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "py7zz"
-version = "1.1.5"
-source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_amd64.whl" }
-resolution-markers = [
-    "platform_machine == 'AMD64' and sys_platform == 'win32'",
-]
-dependencies = [
-    { name = "packaging", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
-    { name = "requests", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
-    { name = "rich", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
-    { name = "typer", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
-]
-wheels = [
-    { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_amd64.whl", hash = "sha256:1a4629e7f508e5917053ebbe958036ca2fab01250fc38be53ad55803c741c779" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "packaging", specifier = ">=25.0" },
-    { name = "requests", specifier = ">=2.32.4" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "typer", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "py7zz"
-version = "1.1.5"
-source = { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_arm64.whl" }
-resolution-markers = [
-    "platform_machine == 'ARM64' and sys_platform == 'win32'",
-]
-dependencies = [
-    { name = "packaging", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
-    { name = "requests", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
-    { name = "rich", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
-    { name = "typer", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
-]
-wheels = [
-    { url = "https://github.com/shenmintao/py7zz/releases/download/v1.1.5/py7zz-1.1.5-py3-none-win_arm64.whl", hash = "sha256:fcbc993a357bd866f316ddef08f6ddf327425180475aae388212443215d15c68" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "packaging", specifier = ">=25.0" },
-    { name = "requests", specifier = ">=2.32.4" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "typer", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "pycparser"
@@ -2345,8 +2225,8 @@ name = "rich"
 version = "15.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markdown-it-py", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32') or sys_platform == 'darwin'" },
-    { name = "pygments", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32') or sys_platform == 'darwin'" },
+    { name = "markdown-it-py" },
+    { name = "pygments" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
 wheels = [
@@ -2525,10 +2405,10 @@ name = "typer"
 version = "0.25.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "annotated-doc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32') or sys_platform == 'darwin'" },
-    { name = "click", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32') or sys_platform == 'darwin'" },
-    { name = "rich", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32') or sys_platform == 'darwin'" },
-    { name = "shellingham", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32') or sys_platform == 'darwin'" },
+    { name = "annotated-doc" },
+    { name = "click" },
+    { name = "rich" },
+    { name = "shellingham" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e4/51/9aed62104cea109b820bbd6c14245af756112017d309da813ef107d42e7e/typer-0.25.1.tar.gz", hash = "sha256:9616eb8853a09ffeabab1698952f33c6f29ffdbceb4eaeecf571880e8d7664cc", size = 122276, upload-time = "2026-04-30T19:32:16.964Z" }
 wheels = [

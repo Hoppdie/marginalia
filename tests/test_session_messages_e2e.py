@@ -174,7 +174,7 @@ async def test_transcript_rewrites_entry_id() -> None:
             print("[1] transcript rewrites raw entry_id to [name](entry:<uuid>)")
 
 
-async def test_transcript_marks_quote_verification_status() -> None:
+async def test_transcript_hides_quote_verification_status() -> None:
     seeded = await _seed_quote_status()
     transport = ASGITransport(app=app)
     async with app.router.lifespan_context(app):
@@ -184,17 +184,20 @@ async def test_transcript_marks_quote_verification_status() -> None:
             ar = r.json()["turns"][0]["agent_response"]
             assert "真实引用会被验证" in ar, ar
             assert "编造引用仍会保留" in ar, ar
-            assert "quote_status=verified; 连字符差异应被容忍" in ar, ar
-            assert "quote_status=unverified; 这句不在原文" in ar, ar
+            assert '"leader election"' in ar, ar
+            assert '"invented copied sentence"' in ar, ar
+            assert "连字符差异应被容忍" in ar, ar
+            assert "这句不在原文" in ar, ar
+            assert "quote_status=" not in ar, ar
             assert f"[quotes.txt](entry:{seeded['eid']}?q=leader+election)" in ar, ar
             assert "entry_id=" not in ar and "quote=\"" not in ar, ar
-            print("[2] transcript marks verified and unverified quotes")
+            print("[2] transcript hides quote verification status")
 
 
 async def main() -> None:
     await _create_schema()
     await test_transcript_rewrites_entry_id()
-    await test_transcript_marks_quote_verification_status()
+    await test_transcript_hides_quote_verification_status()
     print("\nALL TESTS PASSED")
 
 

@@ -247,6 +247,9 @@ async def _check_rewrite():
         )
         expected_q = urllib.parse.quote_plus("合同第4.6条规定")
         assert f"[my-doc.md](entry:{eid}?q={expected_q})" in out, out
+        assert '"合同第4.6条规定"' in out, out
+        assert "reason" in out, out
+        assert "quote=" not in out, out
 
         # 2. PDF + page → ?page=<n>
         set_file(mime_type="application/pdf", original_ext="pdf", kind="text")
@@ -279,6 +282,7 @@ async def _check_rewrite():
             f'body[^a]\n\n[^a]: entry_id={eid}, quote="abc", reason="summary reason"',
         )
         assert f"[my-doc.md](entry:{eid}?q=abc)" in out, out
+        assert '"abc"' in out, out
         assert "summary reason" in out, out
         assert "entry_id=" not in out and "reason=" not in out, out
 
@@ -291,6 +295,7 @@ async def _check_rewrite():
             ),
         )
         assert f"[my-doc.md](entry:{eid}?q=abc)" in out, out
+        assert '"abc"' in out, out
         assert "extra params" in out, out
         for raw in ("entry_id=", "quote=", "reason=", "confidence=", "source="):
             assert raw not in out, out

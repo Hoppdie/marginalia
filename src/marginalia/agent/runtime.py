@@ -66,7 +66,6 @@ from marginalia.citations import (
     CITATION_FOOTNOTE_RE,
     CitationFootnote,
     parse_citation_footnote_match,
-    quote_matches_source_text,
     unescape_citation_quote,
 )
 from marginalia.db.models import Session as SessionRow
@@ -88,7 +87,6 @@ from marginalia.pipelines.pdf_text import (
     locate_quote_page,
     resolve_page_label,
 )
-from marginalia.pipelines import resolve_pipeline
 from marginalia.repositories import sessions as session_service
 from marginalia.repositories import entries as entries_repo
 from marginalia.repositories import tags as tags_repo
@@ -116,7 +114,6 @@ STRUCTURED_TRUNCATE_PASSES = 3
 PLAN_MAX_TOKENS = 1024
 EXECUTE_MAX_TOKENS = 2048
 TOOL_RESULT_PREVIEW_LEN = 240
-QUOTE_VERIFY_MAX_CHARS = 1_000_000
 
 NO_PLAN_PREFIX = "NO_PLAN:"
 BUDGET_PREFIX = "BUDGET:"
@@ -980,67 +977,15 @@ async def _resolve_pdf_page_locator(file: Any, page: str | None) -> int | None:
         return first
 
 
-def _quote_source_cache_key(file: Any) -> str | None:
-    for attr in ("sha256", "id", "storage_key"):
-        value = getattr(file, attr, None)
-        if value:
-            return f"{attr}:{value}"
-    return None
-
-
-async def _verify_quote_in_file(
-    file: Any,
-    quote: str,
-    *,
-    display_name: str | None = None,
-    text_cache: dict[str, str | None] | None = None,
-) -> bool:
-    """Best-effort quote verification for non-PDF text-like pipelines."""
-    if file is None or not (quote or "").strip():
-        return False
-
-    cache_key = _quote_source_cache_key(file)
-    if text_cache is not None and cache_key and cache_key in text_cache:
-        source = text_cache[cache_key]
-        return bool(source and quote_matches_source_text(source, _unescape_quote(quote)))
-
-    try:
-        pipeline = resolve_pipeline(
-            getattr(file, "mime_type", None),
-            getattr(file, "original_ext", None),
-            filename=display_name,
-        )
-        if pipeline is None:
-            source = None
-        else:
-            from marginalia.storage import get_storage
-
-            seg = await pipeline.read_segment(
-                file_row=file,
-                args={"offset": 0, "max_chars": QUOTE_VERIFY_MAX_CHARS},
-                storage=get_storage(),
-            )
-            source = None if seg.error else (seg.text or "")
-    except Exception:
-        log.exception("footnote rewrite: quote verification failed")
-        source = None
-
-    if text_cache is not None and cache_key:
-        text_cache[cache_key] = source
-    return bool(source and quote_matches_source_text(source, _unescape_quote(quote)))
-
-
-def _quote_status_text(status: bool | None) -> str | None:
-    if status is None:
-        return None
-    return f"quote_status={'verified' if status else 'unverified'}"
-
-
-def _footnote_detail(reason: str | None, quote_status: bool | None) -> str | None:
-    status = _quote_status_text(quote_status)
-    if status and reason:
-        return f"{status}; {reason}"
-    return status or reason
+def _footnote_detail(reason: str | None, quote: str | None) -> str | None:
+    parts: list[str] = []
+    if quote:
+        text = _unescape_quote(quote).strip()
+        if text:
+            parts.append(f'"{text}"')
+    if reason:
+        parts.append(reason)
+    return " — ".join(parts) if parts else None
 
 
 async def _rewrite_footnotes_for_display(answer: str) -> str:
@@ -1083,9 +1028,7 @@ async def _rewrite_footnotes_for_display(answer: str) -> str:
         return answer
 
     located_pdf_pages: dict[int, int] = {}
-    quote_status_by_start: dict[int, bool] = {}
     pdf_pages_cache: dict[str, PdfTextRange] = {}
-    quote_text_cache: dict[str, str | None] = {}
     for footnote in footnotes:
         raw_eid = footnote.entry_id
         full_eid = resolved.get(raw_eid, raw_eid)
@@ -1098,20 +1041,11 @@ async def _rewrite_footnotes_for_display(answer: str) -> str:
                 located = await _locate_pdf_quote_page(
                     file, quote, pages_cache=pdf_pages_cache,
                 )
-                quote_status_by_start[footnote.start] = located is not None
             if located is None and page:
                 located = await _resolve_pdf_page_locator(file, page)
             if located:
                 located_pdf_pages[footnote.start] = located
             continue
-        if quote:
-            quote_status_by_start[footnote.start] = await _verify_quote_in_file(
-                file,
-                quote,
-                display_name=name_by_id.get(full_eid),
-                text_cache=quote_text_cache,
-            )
-
     footnote_by_start = {footnote.start: footnote for footnote in footnotes}
 
     def _replace(m: re.Match[str]) -> str:
@@ -1121,7 +1055,6 @@ async def _rewrite_footnotes_for_display(answer: str) -> str:
         quote = footnote.quote
         page = footnote.page
         reason = footnote.reason
-        quote_status = quote_status_by_start.get(m.start()) if quote else None
 
         full_eid = resolved.get(raw_eid, raw_eid)
         short = full_eid[:8]
@@ -1136,7 +1069,7 @@ async def _rewrite_footnotes_for_display(answer: str) -> str:
                 located_pdf_page=located_pdf_pages.get(m.start()),
             )
             head = f"[{name}](entry:{full_eid}{qs})"
-        detail = _footnote_detail(reason, quote_status)
+        detail = _footnote_detail(reason, quote)
         if detail:
             return f"[^{marker}]: {head} — {detail}"
         return f"[^{marker}]: {head}"

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.2.4 - 2026-06-11
+
+### Fixed
+
+- Citation footnotes now show the cited quote excerpt while hiding internal
+  `quote_status=...` markers; source links and quote/page locators are still
+  preserved.
+
+### Changed
+
+- Switched `py7zz` back to the upstream PyPI package at `>=1.3.1`, replacing
+  the temporary forked wheel URLs now that upstream publishes ARM64 wheels.
+
+### Release Notes
+
+- Stable release for the 0.2.4 line, including the 0.2.4-rc.1 feature set.
+
 ## 0.2.4-rc.1 - 2026-06-10
 
 ### Added

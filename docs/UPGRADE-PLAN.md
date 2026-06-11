@@ -257,14 +257,16 @@
 - 依赖：无；建议工具接口在 T16 等重构稳定后做。
 
 ### T16. 引用契约升级为可验证属性 【M】
-- 状态：已完成（2026-06-10）。展示层脚注会附加
-  `quote_status=verified|unverified`，PDF quote 定位与通用 quote 验证共享空白/标点
-  归一化匹配；失败只标注不删除答案。
+- 状态：已完成（2026-06-10），2026-06-11 调整展示行为。展示层脚注不暴露
+  `quote_status=verified|unverified` 等内部标记；PDF quote 定位仍使用空白/标点
+  归一化匹配，失败不删除答案。
 - 背景：DESIGN.md §1.3 引用契约靠 LLM 自觉。展示层的 quote-location 逻辑
   （`agent/runtime.py:788` 附近的 PDF quote locator）已做了一半。
-- 改动：服务端校验 footnote 的 `quote` 确实存在于该 entry 原文中（容忍空白/标点归一化），
-  向用户暴露 verified/unverified 标志。校验失败不删答案，只标注。
-- 验收：构造 LLM 编造 quote 的场景，验证被标 unverified；真实 quote 标 verified。
+- 改动：服务端解析 footnote 的 `quote`/`page`，PDF 通过 quote 定位物理页，文本类保留
+  `?q=` 深链；展示输出显示 quote 原文摘录，但隐藏 `entry_id`、`quote=`、
+  `quote_status` 等内部字段。
+- 验收：构造真实 quote 与编造 quote 的场景，验证脚注仍保留来源链接和说明文本，但不显示
+  `quote_status=`。
 - 依赖：无。
 
 ### T17. 文档化 known gaps 【S】
