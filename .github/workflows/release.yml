@@ -11,6 +11,9 @@ name: Release
 #   - Windows portable zip packages in addition to NSIS installers.
 #   - Native desktop bundles for Windows x64/arm64, macOS arm64, and
 #     Linux x64/arm64.
+#   - Linux AppImage artifacts in addition to .deb/.rpm. Linux desktop
+#     bundles are built on Ubuntu 22.04 runners to keep the glibc baseline
+#     compatible with Ubuntu 22.04-class systems.
 #   - A multi-arch Docker image pushed to ghcr.io/<owner>/marginalia and
 #     tagged with the version and latest.
 #
@@ -52,12 +55,12 @@ jobs:
             tauri_args: "--bundles dmg"
           - target: linux-x64
             platform: linux
-            runner: ubuntu-latest
-            tauri_args: "--bundles deb,rpm"
+            runner: ubuntu-22.04
+            tauri_args: "--bundles deb,rpm,appimage"
           - target: linux-arm64
             platform: linux
-            runner: ubuntu-24.04-arm
-            tauri_args: "--bundles deb,rpm"
+            runner: ubuntu-22.04-arm
+            tauri_args: "--bundles deb,rpm,appimage"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -87,6 +90,7 @@ jobs:
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
+            libfuse2 \
             librsvg2-dev \
             patchelf
 
@@ -181,6 +185,10 @@ jobs:
           shopt -s nullglob
           debs=(desktop/src-tauri/target/release/bundle/deb/*.deb)
           rpms=(desktop/src-tauri/target/release/bundle/rpm/*.rpm)
+          appimages=(
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/appimage/*.appimage
+          )
           if [ "${#debs[@]}" -ne 1 ]; then
             echo "Expected exactly one deb, found ${#debs[@]}" >&2
             exit 1
@@ -189,8 +197,13 @@ jobs:
             echo "Expected exactly one rpm, found ${#rpms[@]}" >&2
             exit 1
           fi
+          if [ "${#appimages[@]}" -ne 1 ]; then
+            echo "Expected exactly one AppImage, found ${#appimages[@]}" >&2
+            exit 1
+          fi
           cp "${debs[0]}" "release-assets/marginalia-$TAG-$TARGET.deb"
           cp "${rpms[0]}" "release-assets/marginalia-$TAG-$TARGET.rpm"
+          cp "${appimages[0]}" "release-assets/marginalia-$TAG-$TARGET.AppImage"
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
@@ -294,6 +307,7 @@ jobs:
 
           Desktop bundles built from \`$TAG\`.
           Desktop targets: Windows x64/arm64, macOS arm64, Linux x64/arm64.
+          Linux targets include .deb, .rpm, and AppImage assets built on Ubuntu 22.04 runners.
           Each bundle ships a self-contained Python runtime; no system Python required.
           Docker image: \`ghcr.io/${{ github.repository_owner }}/marginalia:$TAG\` (linux/amd64, linux/arm64)
 
@@ -316,8 +330,10 @@ jobs:
             "marginalia-$TAG-macos-arm64.dmg"
             "marginalia-$TAG-linux-x64.deb"
             "marginalia-$TAG-linux-x64.rpm"
+            "marginalia-$TAG-linux-x64.AppImage"
             "marginalia-$TAG-linux-arm64.deb"
             "marginalia-$TAG-linux-arm64.rpm"
+            "marginalia-$TAG-linux-arm64.AppImage"
           )
           assets="$(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)"
           missing=0
@@ -366,8 +382,10 @@ jobs:
             "marginalia-$TAG-macos-arm64.dmg"
             "marginalia-$TAG-linux-x64.deb"
             "marginalia-$TAG-linux-x64.rpm"
+            "marginalia-$TAG-linux-x64.AppImage"
             "marginalia-$TAG-linux-arm64.deb"
             "marginalia-$TAG-linux-arm64.rpm"
+            "marginalia-$TAG-linux-arm64.AppImage"
           )
           assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
           missing=0
