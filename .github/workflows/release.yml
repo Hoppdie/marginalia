@@ -13,7 +13,9 @@ name: Release
 #     Linux x64/arm64.
 #   - Linux AppImage artifacts in addition to .deb/.rpm. Linux desktop
 #     bundles are built on Ubuntu 22.04 runners to keep the glibc baseline
-#     compatible with Ubuntu 22.04-class systems.
+#     compatible with Ubuntu 22.04-class systems. AppImage bundling sets
+#     NO_STRIP=true to avoid linuxdeploy's bundled strip failing on modern ELF
+#     relocation sections; see https://github.com/tauri-apps/tauri/issues/14796.
 #   - A multi-arch Docker image pushed to ghcr.io/<owner>/marginalia and
 #     tagged with the version and latest.
 #
@@ -118,17 +120,6 @@ jobs:
         working-directory: desktop
         run: npm run tauri:build -- --ci ${{ matrix.tauri_args }}
 
-      - name: Check Linux AppImage tooling
-        if: matrix.platform == 'linux'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          uname -a
-          ldd --version | head -n 1
-          for tool in file desktop-file-validate glib-compile-schemas gtk-update-icon-cache mksquashfs patchelf; do
-            command -v "$tool"
-          done
-
       - name: Build Linux deb/rpm bundles
         if: matrix.platform == 'linux'
         working-directory: desktop
@@ -141,7 +132,10 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           ARCH: ${{ matrix.appimage_arch }}
-          NO_STRIP: "1"
+          # linuxdeploy's bundled strip can fail on modern ELF .relr.dyn
+          # sections. The linuxdeploy-supported NO_STRIP=true workaround keeps
+          # AppImage bundling green; see tauri-apps/tauri#14796.
+          NO_STRIP: "true"
         run: |
           set -euo pipefail
           wheel_lib_path="$(
@@ -154,7 +148,7 @@ jobs:
           if [ -n "$wheel_lib_path" ]; then
             export LD_LIBRARY_PATH="$wheel_lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
-          npm run tauri -- bundle --ci --bundles appimage
+          npm run tauri -- bundle --ci --bundles appimage --verbose
 
       - name: Package Windows portable zip
         if: matrix.platform == 'windows'
