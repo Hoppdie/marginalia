@@ -238,6 +238,9 @@ export function UploadDialog({ folderId, folderName, onClose, onUploaded }: {
           </button>
         ))}
       </div>
+      <p className="mt-3 text-xs leading-5 text-fg-muted">
+        {t.dialogs.uploadAnalysisHint}
+      </p>
 
       {items.length > 0 && (
         <ul className="mt-3 max-h-64 space-y-1 overflow-y-auto rounded-md border border-border bg-bg-subtle p-2 text-xs">

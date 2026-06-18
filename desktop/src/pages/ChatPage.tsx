@@ -13,12 +13,13 @@
  *  a fresh session lazily on first send.
  */
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Gauge, Send, Square, Sparkles, Zap } from "lucide-react";
+import { Link } from "react-router-dom";
+import { AlertCircle, Gauge, Send, Square, Sparkles, Zap } from "lucide-react";
 
-import { sessions } from "@/api/client";
+import { sessions, settings as settingsApi } from "@/api/client";
 import { streamChat } from "@/api/chatStream";
 import type {
-  ChatEvent, ChatMode, PlanBudgetData, ReplayedTurn, ReplayedToolCall,
+  ChatEvent, ChatMode, LlmSettings, PlanBudgetData, ReplayedTurn, ReplayedToolCall,
   ThinkingEventData,
 } from "@/types/api";
 import { TurnView, type Turn, type Step } from "@/components/TurnView";
@@ -53,9 +54,25 @@ export function ChatPage() {
   const { setTurns, setChatMode, setStreaming, setLoading, reset } = useChatSession();
   const [input, setInput] = useState("");
   const [openErr, setOpenErr] = useState<string | null>(null);
+  const [llmReady, setLlmReady] = useState<boolean | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [refreshSignal, setRefreshSignal] = useState(0);
   const { t: i18n } = useI18n();
+
+  useEffect(() => {
+    let cancelled = false;
+    settingsApi.llm().then(
+      (llm) => {
+        if (!cancelled) setLlmReady(hasRequiredLlmKeys(llm));
+      },
+      () => {
+        if (!cancelled) setLlmReady(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const ensureSession = useCallback(
     async (initiatingMessage?: string): Promise<string> => {
@@ -112,6 +129,10 @@ export function ChatPage() {
     const q = input.trim();
     const { streaming: curStreaming } = useChatSession.getState();
     if (!q || curStreaming) return;
+    if (llmReady === false) {
+      setOpenErr(i18n.chat.llmMissingError);
+      return;
+    }
 
     let sid: string;
     let isFirstTurn = false;
@@ -187,7 +208,7 @@ export function ChatPage() {
       }
       if (cur && cur.generation === gen && isFirstTurn) setRefreshSignal((n) => n + 1);
     }
-  }, [input, chatMode, ensureSession, setTurns, setStreaming, i18n]);
+  }, [input, chatMode, ensureSession, setTurns, setStreaming, i18n, llmReady]);
 
   const stop = useCallback(() => {
     const sid = useChatSession.getState().sessionId;
@@ -259,7 +280,9 @@ export function ChatPage() {
             {loading && (
               <div className="mb-4 text-sm text-fg-muted">{i18n.chat.loadingTranscript}</div>
             )}
-            {!loading && turns.length === 0 && <ChatEmpty t={i18n} />}
+            {!loading && turns.length === 0 && (
+              <ChatEmpty t={i18n} llmReady={llmReady} />
+            )}
             {turns.map((t, i) => (
               <TurnView key={i} turn={t} />
             ))}
@@ -370,7 +393,7 @@ export function ChatPage() {
   );
 }
 
-function ChatEmpty({ t }: { t: I18nStrings }) {
+function ChatEmpty({ t, llmReady }: { t: I18nStrings; llmReady: boolean | null }) {
   return (
     <div className="flex h-full min-h-[40vh] flex-col items-center justify-center text-center">
       <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-accent-subtle text-accent">
@@ -380,11 +403,34 @@ function ChatEmpty({ t }: { t: I18nStrings }) {
       <p className="mt-1 max-w-md text-sm text-fg-muted">
         {t.chat.emptyBody}
       </p>
+      {llmReady === false && (
+        <div className="mt-5 max-w-lg rounded-md bg-danger/10 px-4 py-3 text-left text-sm">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+            <div>
+              <div className="font-medium text-fg-base">{t.chat.llmMissingTitle}</div>
+              <p className="mt-0.5 text-fg-muted">{t.chat.llmMissingBody}</p>
+              <Link
+                to="/settings"
+                className="mt-2 inline-flex rounded-md bg-accent px-3 py-1 text-xs font-medium text-accent-fg hover:opacity-90"
+              >
+                {t.chat.llmMissingAction}
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mt-4 flex flex-wrap justify-center gap-2 text-xs text-fg-subtle">
         <kbd className="rounded border border-border bg-bg-subtle px-1.5 py-0.5">{t.chat.enter}</kbd> {t.chat.enterHint}
         <kbd className="rounded border border-border bg-bg-subtle px-1.5 py-0.5">{t.chat.shiftEnter}</kbd> {t.chat.shiftEnterHint}
       </div>
     </div>
+  );
+}
+
+function hasRequiredLlmKeys(llm: LlmSettings): boolean {
+  return (["chat", "reflect", "ingest"] as const).every(
+    (profile) => Boolean(llm.profiles[profile]?.api_key_set),
   );
 }
 

@@ -7,6 +7,7 @@ import pytest
 from marginalia.config import LlmProfile
 from marginalia.llm.anthropic_adapter import AnthropicChatClient
 from marginalia.llm.factory import _UsageRecordingChatClient
+from marginalia.llm.model_controls import should_disable_thinking_by_default
 from marginalia.llm.openai_adapter import OpenAIChatClient
 from marginalia.llm.types import ChatMessage, ChatRequest, ChatResponse, TokenUsage, ToolDef
 
@@ -42,6 +43,52 @@ async def _capture_openai_kwargs(
 
     await client.complete(request)
     return seen
+
+
+def test_ollama_ingest_profile_does_not_disable_thinking_by_default() -> None:
+    profile = LlmProfile(
+        name="ingest",
+        provider="openai-compatible",
+        api_key="local",
+        base_url="http://127.0.0.1:11434/v1",
+        model="qwen2.5:7b",
+    )
+
+    assert should_disable_thinking_by_default(profile) is False
+
+
+@pytest.mark.asyncio
+async def test_ollama_dialect_uses_max_tokens() -> None:
+    seen = await _capture_openai_kwargs(
+        base_url="http://127.0.0.1:11434/v1",
+        model="qwen2.5:7b",
+        request=ChatRequest(
+            system=None,
+            messages=[ChatMessage(role="user", content="hello")],
+            max_tokens=32,
+        ),
+    )
+
+    assert seen["max_tokens"] == 32
+    assert "max_completion_tokens" not in seen
+
+
+@pytest.mark.asyncio
+async def test_ollama_dialect_drops_thinking_controls() -> None:
+    seen = await _capture_openai_kwargs(
+        base_url="http://localhost:11434/v1",
+        model="qwen2.5:7b",
+        request=ChatRequest(
+            system=None,
+            messages=[ChatMessage(role="user", content="hello")],
+            max_tokens=32,
+            reasoning_effort="high",
+            extra_body={"thinking": {"type": "disabled"}},
+        ),
+    )
+
+    assert "reasoning_effort" not in seen
+    assert "extra_body" not in seen
 
 
 @pytest.mark.asyncio

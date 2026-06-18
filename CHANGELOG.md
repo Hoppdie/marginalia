@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.2.5 - 2026-06-18
+
+### Added
+
+- Desktop Help and About pages, including first-run guidance, settings
+  explanations, project links, privacy notes, and a manual latest-version
+  check.
+- Chinese and English GUI tutorials for non-technical users, linked from both
+  README files.
+- Settings-page first-run status that explains missing LLM profile
+  configuration before users import files or ask questions.
+- Upload dialog, Help, and tutorials now remind users to watch Activity or
+  Library status until AI file analysis finishes.
+
+### Changed
+
+- Chat now checks required LLM profile configuration before sending a turn and
+  surfaces a clearer setup message when model credentials are missing.
+- Linux release builds now include AppImage artifacts, and Linux desktop
+  bundles are built on Ubuntu 22.04 runners for a lower glibc baseline.
+
+### Fixed
+
+- Ollama OpenAI-compatible profiles now use the legacy `max_tokens` chat
+  parameter and avoid unsupported thinking controls during ingest.
+- Linux AppImage bundling now sets `NO_STRIP=true` for linuxdeploy and exposes
+  all bundled backend shared-library directories during dependency scanning.
+
 ## 0.2.4 - 2026-06-11
 
 ### Fixed

@@ -2,6 +2,7 @@
 
 > English: [README.md](README.md)
 > 设计文档: [DESIGN.md](DESIGN.md)
+> GUI 教程: [中文](docs/GUI_TUTORIAL.zh-CN.md) · [English](docs/GUI_TUTORIAL.md)
 
 **把你的 PDF、笔记、表格、日志和压缩包变成一个能读原文、会引用来源的私人
 AI 图书馆。**
@@ -11,7 +12,7 @@ Marginalia 是本地优先的个人研究 agent。它把杂乱的私有文件整
 建立关联;你提问时,agent 会先找材料,再读原文片段,最后给出带引用的回答。
 
 [下载桌面应用](https://github.com/shenmintao/marginalia/releases) ·
-[CLI 快速开始](#cli-快速开始) · [使用手册](USAGE.zh-CN.md) ·
+[GUI 教程](docs/GUI_TUTORIAL.zh-CN.md) · [CLI 快速开始](#cli-快速开始) · [使用手册](USAGE.zh-CN.md) ·
 [设计文档](DESIGN.md)
 
 ![Marginalia 宣传图](docs/images/marginalia-promo.png)

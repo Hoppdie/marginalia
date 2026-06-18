@@ -12,7 +12,7 @@
  *  Sections 1-2 work without a backend. Section 3 calls /v1/settings/*
  *  and shows a friendly empty state if the server is offline. */
 import { useEffect, useState } from "react";
-import { Save, Sun, Moon, Monitor, RefreshCw } from "lucide-react";
+import { AlertCircle, CheckCircle2, Save, Sun, Moon, Monitor, RefreshCw } from "lucide-react";
 
 import {
   setApiToken,
@@ -79,6 +79,7 @@ export function SettingsPage() {
       <div className="mx-auto max-w-2xl space-y-6">
         <h1 className="text-xl font-semibold">{t.settings.title}</h1>
 
+        <QuickStartSection ctx={ctx} />
         <ConnectionSection />
         <PreferencesSection ctx={ctx} />
         <RetrievalSection ctx={ctx} />
@@ -199,6 +200,101 @@ function useServerCtx(): ServerCtx {
     setServerString,
     setServerSecret,
   };
+}
+
+// ---- First-run guide ------------------------------------------------------
+
+function QuickStartSection({ ctx }: { ctx: ServerCtx }) {
+  const { llm, err } = ctx;
+  const { t } = useI18n();
+  const missing = missingRequiredProfiles(llm);
+  const ready = Boolean(llm && missing.length === 0);
+  const statusText = err
+    ? t.settings.guideStatusOffline
+    : !llm
+      ? t.settings.guideStatusLoading
+      : ready
+        ? t.settings.guideStatusReady
+        : !llm.defaults.api_key_set && missing.length === 3
+          ? t.settings.guideStatusDefaultMissing
+          : t.settings.guideStatusMissingProfiles(missing.join(", "));
+
+  return (
+    <Section
+      title={t.settings.guideTitle}
+      subtitle={t.settings.guideSubtitle}
+    >
+      <div className="space-y-4">
+        <div
+          className={cn(
+            "flex items-start gap-2 rounded-md px-3 py-2 text-sm",
+            ready
+              ? "bg-accent-subtle text-fg-base"
+              : "bg-danger/10 text-fg-base",
+          )}
+        >
+          {ready ? (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+          ) : (
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+          )}
+          <span>{statusText}</span>
+        </div>
+
+        <ol className="space-y-3 text-sm">
+          <GuideStep index={1} title={t.settings.guideConfigureTitle}>
+            <p>{t.settings.guideConfigureBody}</p>
+            <p className="mt-1 text-xs text-fg-subtle">
+              {t.settings.guideLocalModelPrefix}{" "}
+              <code className="font-mono">openai-compatible</code>,{" "}
+              <code className="font-mono">http://127.0.0.1:11434/v1</code>{" "}
+              {t.common.or}{" "}
+              <code className="font-mono">http://127.0.0.1:1234/v1</code>;
+              {" "}{t.settings.guideLocalModelKey}
+            </p>
+          </GuideStep>
+          <GuideStep index={2} title={t.settings.guideImportTitle}>
+            <p>{t.settings.guideImportBody}</p>
+          </GuideStep>
+          <GuideStep index={3} title={t.settings.guideAskTitle}>
+            <p>{t.settings.guideAskBody}</p>
+          </GuideStep>
+          <GuideStep index={4} title={t.settings.guideEmbeddingTitle}>
+            <p>{t.settings.guideEmbeddingBody}</p>
+          </GuideStep>
+        </ol>
+      </div>
+    </Section>
+  );
+}
+
+function GuideStep({
+  index,
+  title,
+  children,
+}: {
+  index: number;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <li className="grid grid-cols-[1.5rem_1fr] gap-3">
+      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-bg-muted text-xs font-semibold text-fg-muted">
+        {index}
+      </span>
+      <div>
+        <div className="font-medium">{title}</div>
+        <div className="mt-0.5 text-fg-muted">{children}</div>
+      </div>
+    </li>
+  );
+}
+
+function missingRequiredProfiles(llm: LlmSettings | null): string[] {
+  if (!llm) return [];
+  return (["chat", "reflect", "ingest"] as const).filter(
+    (profile) => !llm.profiles[profile]?.api_key_set,
+  );
 }
 
 // ---- Connection ------------------------------------------------------------
