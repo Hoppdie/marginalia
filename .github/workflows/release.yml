@@ -138,6 +138,7 @@ jobs:
           NO_STRIP: "true"
         run: |
           set -euo pipefail
+          backend_lib_path="src-tauri/resources/backend/lib"
           wheel_lib_path="$(
             find src-tauri/resources/backend/lib/python3.12/site-packages \
               -maxdepth 1 \
@@ -145,9 +146,7 @@ jobs:
               -name '*.libs' \
               -print | paste -sd ':'
           )"
-          if [ -n "$wheel_lib_path" ]; then
-            export LD_LIBRARY_PATH="$wheel_lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          fi
+          export LD_LIBRARY_PATH="$backend_lib_path${wheel_lib_path:+:$wheel_lib_path}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           npm run tauri -- bundle --ci --bundles appimage --verbose
 
       - name: Package Windows portable zip
