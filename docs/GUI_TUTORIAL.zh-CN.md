@@ -371,7 +371,7 @@ node scripts\package-windows-portable.mjs
 ```text
 desktop\src-tauri\target\release\marginalia-tauri.exe
 desktop\src-tauri\target\release\bundle\
-desktop\src-tauri\target\release\bundle\nsis\marginalia-v0.2.5-windows-x64-portable.zip
+desktop\src-tauri\target\release\bundle\nsis\marginalia-v0.2.6-windows-x64-portable.zip
 ```
 
 打包版启动后会自动拉起后端，不需要你手动运行 `python -m marginalia`。

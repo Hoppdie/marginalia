@@ -366,7 +366,7 @@ Common output paths:
 ```text
 desktop\src-tauri\target\release\marginalia-tauri.exe
 desktop\src-tauri\target\release\bundle\
-desktop\src-tauri\target\release\bundle\nsis\marginalia-v0.2.5-windows-x64-portable.zip
+desktop\src-tauri\target\release\bundle\nsis\marginalia-v0.2.6-windows-x64-portable.zip
 ```
 
 Packaged builds start the backend automatically. You do not need to run `python -m marginalia` manually.

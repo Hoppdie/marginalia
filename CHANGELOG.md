@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.6 - 2026-06-19
+
 ### Added
 
 - Desktop bundles now expose `marginalia`, `marginalia-mcp`, and
