@@ -56,11 +56,13 @@ jobs:
           - target: linux-x64
             platform: linux
             runner: ubuntu-22.04
-            tauri_args: "--bundles deb,rpm,appimage"
+            tauri_args: "--bundles deb,rpm"
+            appimage_arch: x86_64
           - target: linux-arm64
             platform: linux
             runner: ubuntu-22.04-arm
-            tauri_args: "--bundles deb,rpm,appimage"
+            tauri_args: "--bundles deb,rpm"
+            appimage_arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -89,11 +91,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            desktop-file-utils \
+            file \
+            libglib2.0-bin \
+            libgtk-3-bin \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             libfuse2 \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            shared-mime-info \
+            squashfs-tools
 
       - name: Install npm deps
         working-directory: desktop
@@ -105,10 +113,34 @@ jobs:
         run: node scripts/prepare-backend.mjs
 
       - name: Build bundles
+        if: matrix.platform != 'linux'
+        working-directory: desktop
+        run: npm run tauri:build -- -vv --ci ${{ matrix.tauri_args }}
+
+      - name: Check Linux AppImage tooling
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          ldd --version | head -n 1
+          for tool in file desktop-file-validate glib-compile-schemas gtk-update-icon-cache mksquashfs patchelf; do
+            command -v "$tool"
+          done
+
+      - name: Build Linux deb/rpm bundles
+        if: matrix.platform == 'linux'
+        working-directory: desktop
+        run: npm run tauri:build -- -vv --ci ${{ matrix.tauri_args }}
+
+      - name: Build Linux AppImage bundle
+        if: matrix.platform == 'linux'
         working-directory: desktop
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npm run tauri:build -- ${{ matrix.tauri_args }}
+          ARCH: ${{ matrix.appimage_arch }}
+          NO_STRIP: "1"
+        run: npm run tauri -- bundle -vv --ci --bundles appimage
 
       - name: Package Windows portable zip
         if: matrix.platform == 'windows'
