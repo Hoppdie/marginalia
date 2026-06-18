@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.2.5 - 2026-06-18
+
+### Added
+
+- Desktop Help and About pages, including first-run guidance, settings
+  explanations, project links, privacy notes, and a manual latest-version
+  check.
+- Chinese and English GUI tutorials for non-technical users, linked from both
+  README files.
+- Settings-page first-run status that explains missing LLM profile
+  configuration before users import files or ask questions.
+
+### Changed
+
+- Chat now checks required LLM profile configuration before sending a turn and
+  surfaces a clearer setup message when model credentials are missing.
+
 ## 0.2.4 - 2026-06-11
 
 ### Fixed

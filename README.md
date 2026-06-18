@@ -2,6 +2,7 @@
 
 > Chinese README: [README.zh-CN.md](README.zh-CN.md)
 > Detailed design: [DESIGN.md](DESIGN.md)
+> GUI setup guide: [English](docs/GUI_TUTORIAL.md) · [中文](docs/GUI_TUTORIAL.zh-CN.md)
 
 **Turn your PDFs, notes, spreadsheets, logs, and archives into a private AI
 library that answers from original sources.**
@@ -12,7 +13,7 @@ library metadata around them, and makes the agent read the relevant original
 file windows before it writes a cited answer.
 
 [Download desktop app](https://github.com/shenmintao/marginalia/releases) ·
-[CLI quickstart](#cli-quickstart) · [Usage guide](USAGE.md) ·
+[GUI setup guide](docs/GUI_TUTORIAL.md) · [CLI quickstart](#cli-quickstart) · [Usage guide](USAGE.md) ·
 [Design notes](DESIGN.md)
 
 ![Marginalia promotional hero](docs/images/marginalia-promo-en.png)

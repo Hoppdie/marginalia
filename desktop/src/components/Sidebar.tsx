@@ -1,5 +1,13 @@
 import { NavLink } from "react-router-dom";
-import { BookOpen, MessageSquare, Search, Settings, Library } from "lucide-react";
+import {
+  BookOpen,
+  CircleHelp,
+  Info,
+  MessageSquare,
+  Search,
+  Settings,
+  Library,
+} from "lucide-react";
 
 import { APP_VERSION } from "@/lib/appVersion";
 import { cn } from "@/lib/utils";
@@ -8,7 +16,7 @@ import { useI18n } from "@/lib/i18n";
 
 interface Item {
   to: string;
-  labelKey: "chat" | "library" | "search" | "settings";
+  labelKey: "chat" | "library" | "search" | "settings" | "help" | "about";
   icon: typeof MessageSquare;
 }
 
@@ -17,6 +25,8 @@ const ITEMS: Item[] = [
   { to: "/library", labelKey: "library", icon: BookOpen },
   { to: "/search", labelKey: "search", icon: Search },
   { to: "/settings", labelKey: "settings", icon: Settings },
+  { to: "/help", labelKey: "help", icon: CircleHelp },
+  { to: "/about", labelKey: "about", icon: Info },
 ];
 
 export function Sidebar() {
