@@ -89,10 +89,15 @@ class OpenAIChatClient(ChatClient):
             raise ValueError("ChatRequest.tools and json_schema are mutually exclusive")
 
         messages = self._render_messages(request)
+        max_token_param = (
+            "max_tokens"
+            if self._compat_dialect == "ollama"
+            else "max_completion_tokens"
+        )
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_completion_tokens": request.max_tokens,
+            max_token_param: request.max_tokens,
         }
         if self._supports_temperature(self.model, request.reasoning_effort):
             kwargs["temperature"] = request.temperature

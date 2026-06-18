@@ -245,6 +245,8 @@ const en = {
       skip: "skip",
       error: "error",
     },
+    uploadAnalysisHint:
+      "After upload, watch the bottom Activity button or Library status badges until AI analysis finishes. Failed files can be retried.",
     start: "Start",
     uploading: "Uploading...",
     renamedTo: (name: string) => `renamed to ${name}`,
@@ -259,7 +261,7 @@ const en = {
       "Set Default under LLM profiles first. Chat, reflect, and ingest inherit it by default.",
     stepImportTitle: "Import documents",
     stepImportBody:
-      "Upload files or folders from Library. Long documents are split internally.",
+      "Upload files or folders from Library. Long documents are split internally. Watch Activity or Library status until analysis finishes.",
     stepAskTitle: "Ask questions",
     stepAskBody:
       "Use Chat after files finish analysis. Answers cite library sources when evidence is found.",
@@ -451,7 +453,7 @@ const en = {
       "use any non-empty API key such as local if that server ignores authentication.",
     guideImportTitle: "Import or retry documents",
     guideImportBody:
-      "Upload Markdown, PDF, Office, images, archives, or folders from Library. Long documents are split internally for analysis; if files were imported before the key was set, use Retry/Reprocess.",
+      "Upload Markdown, PDF, Office, images, archives, or folders from Library. Watch Activity or Library status until analysis finishes; if files were imported before the key was set, use Retry/Reprocess.",
     guideAskTitle: "Ask from Chat",
     guideAskBody:
       "Use Auto for normal questions, Quick for a small bounded search, and Deep when you expect a larger investigation with more source reads.",
@@ -821,6 +823,8 @@ const zh: I18nStrings = {
       skip: "跳过",
       error: "报错",
     },
+    uploadAnalysisHint:
+      "上传完成后，请关注底部后台任务按钮或资料库状态标记，等待 AI 分析完成；失败文件可以重试。",
     start: "开始",
     uploading: "上传中...",
     renamedTo: (name: string) => `已重命名为 ${name}`,
@@ -835,7 +839,7 @@ const zh: I18nStrings = {
       "先配置 LLM 配置里的 Default。chat、reflect、ingest 默认继承它。",
     stepImportTitle: "导入文档",
     stepImportBody:
-      "在资料库上传文件或文件夹。长文档会在内部自动分块处理。",
+      "在资料库上传文件或文件夹。长文档会在内部自动分块处理。上传后请关注后台任务或资料库状态，等待分析完成。",
     stepAskTitle: "开始提问",
     stepAskBody:
       "文件分析完成后到聊天页提问。找到证据时，回答会带资料库引用。",
@@ -1027,7 +1031,7 @@ const zh: I18nStrings = {
       "如果本地服务不校验鉴权，API key 可填 local 这类非空占位值。",
     guideImportTitle: "导入或重试文档",
     guideImportBody:
-      "在资料库里上传 Markdown、PDF、Office、图片、压缩包或文件夹。长文档会在内部自动分块分析；如果文档是在配置 key 前导入的，请对失败文件执行重试或重新处理。",
+      "在资料库里上传 Markdown、PDF、Office、图片、压缩包或文件夹。上传后请关注后台任务或资料库状态，等待分析完成；如果文档是在配置 key 前导入的，请对失败文件执行重试或重新处理。",
     guideAskTitle: "到聊天页提问",
     guideAskBody:
       "普通问题用自动模式；范围很小的问题用快速模式；需要更充分查证、读取更多来源时用深入模式。",

@@ -9,6 +9,7 @@ This guide is written for non-technical users. It explains the first-run setup, 
 3. Embeddings are optional. Basic library search and grounded Q&A work without an embedding model. Embeddings only improve semantic recall.
 4. Local models are supported when they expose an OpenAI-compatible API, such as Ollama, LM Studio, or vLLM.
 5. Most users only need to configure the `Default` LLM profile. Leave `chat`, `reflect`, and `ingest` blank so they inherit `Default`.
+6. Uploading a file only copies it into the library. Watch the bottom Activity button or Library status badges until AI analysis finishes before expecting the best chat answers.
 
 ## First-Run Setup
 
@@ -36,6 +37,8 @@ After saving `Default`, the `chat`, `reflect`, and `ingest` profiles inherit it 
 Go to `Library` and upload Markdown, PDF, Office files, images, archives, or folders.
 
 Long files are split internally. You do not need to prepare chunks manually.
+
+After upload, watch the bottom Activity button or the status badges in Library. Ask questions after AI analysis finishes. Failed files can be retried or reprocessed.
 
 If files were imported before an API key was configured, their analysis may have failed. After configuring the model, use Retry/Reprocess on those files.
 
@@ -81,6 +84,8 @@ Start Ollama first and make sure the model is installed.
 | Base URL | `http://127.0.0.1:11434/v1` |
 | Model | The installed Ollama model name |
 | API Key | `local` |
+
+Ollama can run ingest when the model has enough context for the imported file. Marginalia chunks long documents internally, but each chunk can still be large, so short-context local models are most reliable with small and medium documents. For large PDFs or long Markdown files, use a larger-context local model or keep the first test set small.
 
 Recommended local-model limits:
 
@@ -241,6 +246,8 @@ Open Settings and check the first-run guide. The required profiles are `chat`, `
 ### 3. Reprocess Files Imported Before the Key Was Set
 
 Files imported before model setup may have failed analysis. Configure the model, then Retry/Reprocess those files.
+
+Upload success does not mean AI analysis is complete. Check the bottom Activity button and the Library status badges; if a file shows failed analysis, retry it after fixing the model settings.
 
 ### 4. Check Local Model Servers
 

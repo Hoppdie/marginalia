@@ -42,10 +42,13 @@ _MIMO_THINKING_MODELS = frozenset({
 
 
 def should_disable_thinking_by_default(profile: LlmProfile) -> bool:
-    return (
-        profile.name == "ingest"
-        and profile.provider in ("openai-compatible", "anthropic")
-    )
+    if profile.name != "ingest":
+        return False
+    if profile.provider == "anthropic":
+        return True
+    if profile.provider == "openai-compatible":
+        return detect_openai_compatible_dialect(profile) != "ollama"
+    return False
 
 
 def with_disabled_thinking(request: ChatRequest) -> ChatRequest:
@@ -86,6 +89,8 @@ def detect_openai_compatible_dialect(profile: LlmProfile) -> str:
         return "gemini"
     if "deepseek" in base_url:
         return "deepseek"
+    if _looks_ollama_endpoint(base_url):
+        return "ollama"
     return "openai-compatible"
 
 
@@ -139,6 +144,8 @@ def apply_openai_reasoning_controls(
         )
     elif dialect == "gemini":
         _apply_gemini_controls(extra_body, request, thinking=thinking)
+    elif dialect == "ollama":
+        _apply_ollama_controls(extra_body, thinking=thinking)
     elif dialect in ("deepseek", "thinking-type"):
         _apply_thinking_type_controls(
             kwargs,
@@ -283,6 +290,17 @@ def _apply_gemini_controls(
                 }
             },
         )
+
+
+def _apply_ollama_controls(
+    extra_body: dict[str, Any],
+    *,
+    thinking: Any,
+) -> None:
+    # The OpenAI-compatible Ollama endpoint uses legacy chat-completion
+    # fields and does not accept provider-specific "thinking" controls.
+    if thinking is None:
+        return
 
 
 def _apply_thinking_type_controls(
@@ -486,6 +504,10 @@ def _looks_deepseek(model_l: str) -> bool:
 
 def _looks_kimi(model_l: str) -> bool:
     return "kimi" in model_l or "moonshot" in model_l
+
+
+def _looks_ollama_endpoint(base_url: str) -> bool:
+    return "ollama" in base_url or ":11434" in base_url
 
 
 def _model_slug(model: str) -> str:
