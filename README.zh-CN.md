@@ -164,6 +164,22 @@ catalog、tag、view、metadata 和 `recall_knowledge` 缩小范围,再按需合
 `marginalia` 是 Claude-Code 风格的 REPL。`/` 开头是 slash 命令,其他
 内容直接发给 agent。
 
+不带参数的 `marginalia` 会进入交互式 REPL。同一套能力也提供 one-shot
+子命令,方便脚本、CI、skill 或不使用 MCP 的 agent 调用:
+
+```bash
+marginalia ask "比较这篇 Raft 论文和我的 Paxos 笔记"
+marginalia search "raft consensus" --json
+marginalia info <entry_id> --json
+marginalia discover <entry_id> --top-k 12 --json
+marginalia check --json
+marginalia ingest --all --yes --json
+```
+
+one-shot 命令和 REPL 使用同一套后端发现模型:显式 `--server URL`,然后是
+`MARGINALIA_SERVER`,再读取 `MARGINALIA_HOME/runtime/server.json`,最后回退到
+embedded backend。默认文本输出给人看;`--json` 会让 stdout 保持结构化,便于自动化解析。
+
 ```
 /help                           列出所有命令
 /upload <local> <remote>        从外部拷文件进库

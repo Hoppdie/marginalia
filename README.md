@@ -284,6 +284,24 @@ evidence.
 
 ## CLI Surface
 
+`marginalia` with no arguments opens the interactive REPL. The same command
+surface is also available as one-shot subcommands for scripts, CI, and agents
+that do not use MCP:
+
+```bash
+marginalia ask "Compare this Raft paper with my Paxos notes"
+marginalia search "raft consensus" --json
+marginalia info <entry_id> --json
+marginalia discover <entry_id> --top-k 12 --json
+marginalia check --json
+marginalia ingest --all --yes --json
+```
+
+One-shot commands use the same backend discovery model as the REPL: explicit
+`--server URL`, then `MARGINALIA_SERVER`, then
+`MARGINALIA_HOME/runtime/server.json`, and finally an embedded backend. Text
+output is meant for humans; `--json` keeps stdout structured for automation.
+
 Slash commands:
 
 ```text

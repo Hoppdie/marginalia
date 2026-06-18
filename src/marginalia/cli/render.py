@@ -15,6 +15,7 @@ import shutil
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 from contextlib import contextmanager
 
@@ -451,6 +452,30 @@ def _ansi_strip_len(s: str) -> int:
     return len(out)
 
 
+def _display_width(s: str) -> int:
+    """Approximate terminal cell width for uncoloured status labels."""
+    width = 0
+    for ch in s:
+        width += 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+    return width
+
+
+def _truncate_display(s: str, max_width: int) -> str:
+    if max_width <= 0 or _display_width(s) <= max_width:
+        return s
+    suffix = "..."
+    limit = max(0, max_width - len(suffix))
+    out: list[str] = []
+    used = 0
+    for ch in s:
+        ch_w = 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+        if used + ch_w > limit:
+            break
+        out.append(ch)
+        used += ch_w
+    return "".join(out).rstrip() + suffix
+
+
 def render_banner(
     title: str,
     lines: list[str],
@@ -467,8 +492,23 @@ def render_banner(
     bl, br = g[_BANNER_BOX_BOT_L], g[_BANNER_BOX_BOT_R]
     h, v = g[_BANNER_BOX_H], g[_BANNER_BOX_V]
 
-    # Top border: ╭─ <title> ──────╮
     title_text = f" {title} "
+    text_widths = [_ansi_strip_len(line) for line in lines]
+    max_text_w = max(text_widths, default=0)
+    terminal_w = shutil.get_terminal_size(fallback=(100, 24)).columns
+    max_width = max(40, terminal_w - 2)
+    mascot_w = len(_BANNER_MASCOT[0])
+    min_gap = 2
+    min_title_width = len(title_text) + 4
+    width_with_mascot = max(
+        width,
+        min_title_width,
+        max_text_w + mascot_w + min_gap + 4,
+    )
+    width_without_mascot = max(width, min_title_width, max_text_w + 4)
+    use_mascot = width_with_mascot <= max_width
+    width = min(max_width, width_with_mascot if use_mascot else width_without_mascot)
+
     title_inner = f"{BOLD}{title_text}{RESET}" if _COLOR else title_text
     fill = max(2, width - 2 - len(title_text) - 1)
     top = (
@@ -477,17 +517,18 @@ def render_banner(
         f"{color}{h * fill}{tr}{reset}"
     )
 
-    # Body rows: │  <line>                     <mascot row>  │
     inner_w = width - 4  # two side borders + one space padding each side
-    mascot_w = len(_BANNER_MASCOT[0])
     body_rows: list[str] = []
-    nrows = max(len(lines), len(_BANNER_MASCOT))
+    nrows = max(len(lines), len(_BANNER_MASCOT) if use_mascot else 0)
     for i in range(nrows):
         text = lines[i] if i < len(lines) else ""
-        mascot = _BANNER_MASCOT[i] if i < len(_BANNER_MASCOT) else " " * mascot_w
         text_w = _ansi_strip_len(text)
-        gap = max(1, inner_w - text_w - mascot_w)
-        line = f"{text}{' ' * gap}{color}{mascot}{reset}"
+        if use_mascot:
+            mascot = _BANNER_MASCOT[i] if i < len(_BANNER_MASCOT) else " " * mascot_w
+            gap = max(min_gap, inner_w - text_w - mascot_w)
+            line = f"{text}{' ' * gap}{color}{mascot}{reset}"
+        else:
+            line = f"{text}{' ' * max(0, inner_w - text_w)}"
         body_rows.append(
             f"{color}{v}{reset} {line} {color}{v}{reset}"
         )
@@ -574,6 +615,19 @@ class Spinner:
         self._thread.start()
         return self
 
+    def _fit_label(self, label: str, elapsed: str) -> str:
+        columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+        available = (
+            columns
+            - len(self._indent)
+            - 1  # marker
+            - 1  # marker-label space
+            - 2  # label-elapsed gap
+            - _display_width(elapsed)
+            - 1  # terminal edge safety margin
+        )
+        return _truncate_display(label, max(12, available))
+
     def _run(self) -> None:
         while self._stop_event is not None and not self._stop_event.is_set():
             frame = next(self._frames)
@@ -582,7 +636,7 @@ class Spinner:
                 self._verb = next(self._verbs)
                 self._verb_at = now
             elapsed = short_duration(now - self._t0)
-            label = self._label or f"{self._verb}…"
+            label = self._fit_label(self._label or f"{self._verb}...", elapsed)
             sys.stdout.write(
                 f"{CR}{CLEAR_LINE}{self._indent}{BLUE}{frame}{RESET} "
                 f"{label}  {DIM}{elapsed}{RESET}"
@@ -607,6 +661,7 @@ class Spinner:
             return
         msg = label if label is not None else self._label
         elapsed = short_duration(time.monotonic() - self._t0)
+        msg = self._fit_label(msg, elapsed)
         if color is None:
             line = f"{DIM}{self._indent}{msg}  {elapsed}{RESET}"
         else:

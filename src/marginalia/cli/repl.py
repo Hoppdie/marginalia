@@ -102,7 +102,8 @@ def _print_banner(ctx: CliContext, mode: str) -> None:
 
     lines = [
         f"{BOLD}Welcome to Marginalia{RESET}  {DIM}- a personal library{RESET}",
-        f"{DIM_GREY}backend{RESET} {backend}    {DIM_GREY}storage{RESET} {storage}",
+        f"{DIM_GREY}backend{RESET} {backend}",
+        f"{DIM_GREY}storage{RESET} {storage}",
         f"{DIM_GREY}cwd{RESET}     {ctx.cwd_remote}",
         f"{DIM}/help for commands. Or just type a question.{RESET}",
     ]
@@ -468,11 +469,16 @@ def main() -> int:
     if argv and argv[0] == "mcp":
         from marginalia.mcp_server import main as mcp_main
         return mcp_main(argv[1:])
+    if argv:
+        from marginalia.cli.oneshot import is_one_shot_command, run as oneshot_main
+        if is_one_shot_command(argv[0]):
+            return oneshot_main(argv)
 
     parser = argparse.ArgumentParser(
         prog="marginalia",
         description=(
             "Marginalia CLI. Run with no args for the embedded REPL, "
+            "`ask`/`search`/`info`/`check` for one-shot automation, "
             "`serve` for a reusable HTTP backend, "
             "`--server URL` (or MARGINALIA_SERVER env) for remote mode, "
             "`marginalia mcp` for the stdio MCP server, or "
