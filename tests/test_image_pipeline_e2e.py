@@ -4,7 +4,7 @@ Run:
     .venv/Scripts/python tests/test_image_pipeline_e2e.py
 
 Verifies:
-  1. The pipeline registry routes image/* mimes to ImagePipeline.
+  1. The pipeline registry routes supported raster mimes to ImagePipeline.
   2. Uploading a PNG enqueues ingest_file; the handler picks it up.
   3. The fake VISION client receives a ChatRequest whose user message
      contains:
