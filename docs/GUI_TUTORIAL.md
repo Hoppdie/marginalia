@@ -1,6 +1,6 @@
 # Marginalia Desktop GUI Tutorial
 
-This guide is written for non-technical teachers and school staff. It explains the first-run setup, what each Settings field means, recommended values, local model setup, embeddings, rerank, and common troubleshooting steps.
+This guide is written for non-technical users. It explains the first-run setup, what each Settings field means, recommended values, local model setup, embeddings, rerank, and common troubleshooting steps.
 
 ## The Short Version
 
@@ -130,13 +130,13 @@ Only change Connection when the GUI talks to a separate backend.
 
 | Setting | Meaning | Recommended |
 | --- | --- | --- |
-| Language | UI language. It does not translate documents. | Auto, or a fixed language for school users. |
+| Language | UI language. It does not translate documents. | Auto, or a fixed language when needed. |
 | Theme | Light, dark, or system appearance. | System. |
 | Default conflict policy | What happens when an uploaded file has the same name as an existing file. | `rename`, so existing files are kept. |
 | Agent token budget | Maximum model output tokens for planning and execution steps. | Keep `1024 / 2048`; raise execute first if answers are cut off. |
 | Agent execute turn budget | Maximum tool-using investigation rounds per question. | `15`; use `8-12` for local models. |
 | Read result compression | Compresses very large file reads before sending them to the chat model. | Enabled. |
-| Concurrent ingest tasks | Number of background file-analysis tasks at once. | `3-5` for school laptops, `1-2` for local models, `10` for stable cloud APIs. |
+| Concurrent ingest tasks | Number of background file-analysis tasks at once. | `3-5` for typical computers, `1-2` for local models, `10` for stable cloud APIs. |
 | Ingest LLM concurrency | Parallel LLM calls for long document chunks and scanned-PDF OCR pages. | `1` for local models, `2-5` for normal cloud APIs, `10` for high-rate-limit APIs. |
 | Status refresh | How often the bottom status bar refreshes. | `4 s`. |
 | Compact sidebar | Icon-only navigation. | Off on desktop, on for small screens. |
@@ -186,7 +186,7 @@ These are mostly read-only diagnostics.
 | DB | Database engine. | `sqlite` for desktop/single user. |
 | Storage | How imported files are stored. | `mirror` for readable folders and easier backups. |
 | Worker | Whether background analysis runs. | Enabled. |
-| Auto lifecycle | Whether files are automatically demoted or archived. | Disabled for school and personal libraries. |
+| Auto lifecycle | Whether files are automatically demoted or archived. | Disabled for personal and small libraries. |
 | Conflict | Current duplicate-name policy. | `rename`. |
 | Token budget | Current plan/execute token limits. | Keep default unless answers are cut off. |
 | Execute turns | Current investigation-round limit. | `15`. |
@@ -385,9 +385,9 @@ Typical contents:
 
 Do not sync a running `MARGINALIA_HOME` with OneDrive, Dropbox, Syncthing, iCloud Drive, or similar tools. SQLite can be corrupted by concurrent file sync. Exit Marginalia first, then copy the whole directory for backup.
 
-## Recommended School Defaults
+## Recommended Defaults For Non-Technical Users
 
-### Normal School Computer + Cloud Model
+### Typical Computer + Cloud Model
 
 | Item | Recommended |
 | --- | --- |
