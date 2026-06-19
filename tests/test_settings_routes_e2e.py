@@ -212,6 +212,7 @@ async def test_server_snapshot_no_secrets() -> None:
             assert body["default_on_conflict"] in ("rename", "error", "skip")
             assert body["worker_batch_size"] >= 1
             assert body["llm_ingest_concurrency"] >= 1
+            assert body["agent_turn_timeout_seconds"] >= 0
             assert body["embedding_api_key_set"] is False
             assert body["embedding_provider"] in ("dashscope", "openai-compatible")
             assert body["semantic_recall_enabled"] is False
@@ -270,6 +271,7 @@ async def test_put_writes_overlay_and_invalidates_cache() -> None:
                         "llm_chat_base_url": "https://example.test/v1",
                         "agent_final_answer_continue_turns": 5,
                         "agent_final_answer_max_chars": 180000,
+                        "agent_turn_timeout_seconds": 2400,
                         "worker_batch_size": 3,
                         "llm_ingest_concurrency": 6,
                         "maintenance_daily_token_budget": 123456,
@@ -300,6 +302,7 @@ async def test_put_writes_overlay_and_invalidates_cache() -> None:
             assert body["profiles"]["chat"]["base_url"] == "https://example.test/v1"
             assert body["overlay"]["agent_final_answer_continue_turns"] == 5
             assert body["overlay"]["agent_final_answer_max_chars"] == 180000
+            assert body["overlay"]["agent_turn_timeout_seconds"] == 2400.0
             assert body["overlay"]["worker_batch_size"] == 3
             assert body["overlay"]["llm_ingest_concurrency"] == 6
             assert body["overlay"]["maintenance_daily_token_budget"] == 123456
@@ -334,6 +337,7 @@ async def test_put_writes_overlay_and_invalidates_cache() -> None:
             assert s.llm_chat_model == "gpt-4o-2026"
             assert s.agent_final_answer_continue_turns == 5
             assert s.agent_final_answer_max_chars == 180000
+            assert s.agent_turn_timeout_seconds == 2400.0
             assert s.worker_batch_size == 3
             assert s.llm_ingest_concurrency == 6
             assert s.maintenance_daily_token_budget == 123456

@@ -328,6 +328,8 @@ async def build_resumed_messages(
     for conv in rows:
         if conv.id == current_conversation_id:
             continue
+        if conv.ended_at is None and not conv.agent_response:
+            continue
         if not conv.user_message:
             continue
         history.append(ChatMessage(role="user", content=conv.user_message))

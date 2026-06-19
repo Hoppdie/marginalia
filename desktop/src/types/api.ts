@@ -159,6 +159,7 @@ export interface ReplayedTurn {
   ended_at: string | null;
   user_message: string;
   agent_response: string | null;
+  error: string | null;
   plan_text: string | null;
   tool_calls: ReplayedToolCall[];
   metrics: {
@@ -341,6 +342,7 @@ export interface ServerSettings {
   agent_execute_max_turns: number;
   agent_final_answer_continue_turns: number;
   agent_final_answer_max_chars: number;
+  agent_turn_timeout_seconds: number;
   read_compression_enabled: boolean;
   read_compression_min_chars: number;
   read_compression_target_chars: number;

@@ -81,3 +81,23 @@ def test_overlay_accepts_maintenance_budget_zero_and_large_values() -> None:
     assert validate_and_normalize(
         {"relation_background_vetting_enabled": "true"}
     ) == {"relation_background_vetting_enabled": True}
+
+
+def test_overlay_validates_agent_turn_timeout_seconds() -> None:
+    from marginalia.services.config_overlay import (
+        OverlayValidationError, validate_and_normalize,
+    )
+
+    assert validate_and_normalize(
+        {"agent_turn_timeout_seconds": "0"}
+    ) == {"agent_turn_timeout_seconds": 0.0}
+    assert validate_and_normalize(
+        {"agent_turn_timeout_seconds": "1800.5"}
+    ) == {"agent_turn_timeout_seconds": 1800.5}
+
+    for bad in (-1, 90_000, "not-a-number"):
+        try:
+            validate_and_normalize({"agent_turn_timeout_seconds": bad})
+        except OverlayValidationError:
+            continue
+        raise AssertionError(f"expected validation error for {bad!r}")

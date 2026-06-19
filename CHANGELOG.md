@@ -31,6 +31,11 @@
   per folder while keeping full-scope reprocess available.
 - Empty agent execute responses after planning now surface as explicit errors
   instead of silent zero-token answers.
+- Closed chat sessions can be reopened by sending another message, so users can
+  continue the same conversation after restarting the app or computer.
+- Interrupted or overlong chat turns are finalized server-side and replay as
+  stopped/error turns instead of leaving the desktop transcript spinning
+  forever.
 - Resumed tool results use the expected message roles.
 - Duplicate ingest tag attachments are de-duplicated before insert, avoiding
   `entry_tags(entry_id, tag_id)` uniqueness failures.

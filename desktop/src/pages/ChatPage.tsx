@@ -637,10 +637,10 @@ function replayedToTurn(rt: ReplayedTurn, t: I18nStrings): Turn {
     query: rt.user_message,
     conversationId: rt.conversation_id,
     steps,
-    answer: rt.agent_response,
+    answer: rt.error ? null : rt.agent_response,
     metrics: rt.metrics,
-    error: null,
-    done: rt.ended_at !== null,
+    error: rt.error,
+    done: rt.ended_at !== null || !!rt.error,
   };
 }
 

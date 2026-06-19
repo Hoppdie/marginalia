@@ -123,6 +123,23 @@ async def last_conversation_id(
     ).scalar_one_or_none()
 
 
+async def latest_unfinished_conversation(
+    db: AsyncSession, session_id: str,
+) -> Conversation | None:
+    """Newest conversation in this session that has not been finalized."""
+    return (
+        await db.execute(
+            select(Conversation)
+            .where(
+                Conversation.session_id == session_id,
+                Conversation.ended_at.is_(None),
+            )
+            .order_by(Conversation.turn_index.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def get_conversation(
     db: AsyncSession, conversation_id: str,
 ) -> Conversation | None:

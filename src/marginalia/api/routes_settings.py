@@ -72,6 +72,7 @@ def server_settings() -> dict[str, Any]:
         "agent_execute_max_turns": s.agent_execute_max_turns,
         "agent_final_answer_continue_turns": s.agent_final_answer_continue_turns,
         "agent_final_answer_max_chars": s.agent_final_answer_max_chars,
+        "agent_turn_timeout_seconds": s.agent_turn_timeout_seconds,
         "read_compression_enabled": s.read_compression_enabled,
         "read_compression_min_chars": s.read_compression_min_chars,
         "read_compression_target_chars": s.read_compression_target_chars,

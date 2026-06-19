@@ -18,6 +18,7 @@ import os
 from uuid import uuid4
 import asyncio
 import sys
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +41,7 @@ get_settings.cache_clear()  # type: ignore[attr-defined]
 from marginalia.db.engine import get_engine, get_session_factory
 from marginalia.db.models import Base, Conversation, Session, Task
 from marginalia.db.models.task_outcomes import TaskOutcome
+from marginalia.agent.types import AgentEvent
 from marginalia.llm.types import (
     ChatRequest, ChatResponse, TokenUsage, ToolUseBlock, ToolResultBlock,
 )
@@ -419,12 +421,92 @@ async def test_empty_execute_response_surfaces_error() -> None:
     print("[3] empty execute response surfaces an error and skips reflect")
 
 
+async def test_chat_turn_timeout_finalizes_unfinished_conversation() -> None:
+    """Route-level timeout must not leave a replayed turn spinning forever."""
+    sid = await _seed_session_with_history()
+    import marginalia.api.routes_chat as routes_chat
+    from marginalia.repositories import sessions as session_service
+
+    original_run_turn = routes_chat.run_turn
+    original_get_settings = routes_chat.get_settings
+
+    async def hanging_run_turn(
+        *,
+        session_id: str,
+        user_message: str,
+        options=None,
+    ):
+        factory = get_session_factory()
+        async with factory() as s:
+            last = await session_service.latest_turn_index(s, session_id)
+            turn_index = 0 if last is None else last + 1
+            conv = await session_service.start_conversation(
+                s,
+                session_id=session_id,
+                turn_index=turn_index,
+                user_message=user_message,
+            )
+            conversation_id = conv.id
+            await s.commit()
+        yield AgentEvent(event_type="conversation", data=conversation_id)
+        await asyncio.sleep(60)
+
+    routes_chat.run_turn = hanging_run_turn  # type: ignore[assignment]
+    routes_chat.get_settings = lambda: SimpleNamespace(  # type: ignore[assignment]
+        agent_turn_timeout_seconds=0.2,
+    )
+    try:
+        transport = ASGITransport(app=app)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                events = await _consume_sse(
+                    c,
+                    f"/v1/chat/{sid}",
+                    {"query": "hang forever"},
+                )
+    finally:
+        routes_chat.run_turn = original_run_turn  # type: ignore[assignment]
+        routes_chat.get_settings = original_get_settings  # type: ignore[assignment]
+
+    errors = [data for event, data in events if event == "error"]
+    assert errors, events
+    assert "exceeded 0.2 seconds" in errors[-1]
+
+    factory = get_session_factory()
+    async with factory() as s:
+        conv = (
+            await s.execute(
+                select(Conversation)
+                .where(Conversation.session_id == sid)
+                .order_by(Conversation.turn_index.desc())
+            )
+        ).scalars().first()
+        assert conv is not None
+        assert conv.user_message == "hang forever"
+        assert conv.ended_at is not None
+        assert conv.agent_response == errors[-1]
+        outcome = (
+            await s.execute(
+                select(TaskOutcome)
+                .where(
+                    TaskOutcome.task_kind == "run_turn",
+                    TaskOutcome.object_id == conv.id,
+                )
+            )
+        ).scalar_one()
+        assert outcome.outcome == "error"
+        assert outcome.detail["interrupted"] == "timeout"
+
+    print("[4] route timeout finalizes the unfinished conversation")
+
+
 async def main() -> None:
     await _create_schema()
     await test_resume_replays_history()
     await test_fresh_session_no_resume_prefix()
     await test_closed_session_reopens_for_next_turn()
     await test_empty_execute_response_surfaces_error()
+    await test_chat_turn_timeout_finalizes_unfinished_conversation()
     print("\nALL SESSION-RESUME TESTS PASSED")
 
 

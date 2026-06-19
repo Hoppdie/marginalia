@@ -37,6 +37,7 @@ _ALLOWED_FIELDS: frozenset[str] = frozenset({
     "agent_execute_max_turns",
     "agent_final_answer_continue_turns",
     "agent_final_answer_max_chars",
+    "agent_turn_timeout_seconds",
     "read_compression_enabled",
     "read_compression_min_chars",
     "read_compression_target_chars",
@@ -227,6 +228,15 @@ def validate_and_normalize(patch: dict[str, Any]) -> dict[str, Any]:
                 upper = 200000
             if v < lower or v > upper:
                 bad.append(f"{k}: out of range [{lower}, {upper}]")
+                continue
+        if k == "agent_turn_timeout_seconds":
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                bad.append(f"{k}: must be a number")
+                continue
+            if v < 0 or v > 86_400:
+                bad.append(f"{k}: out of range [0, 86400]")
                 continue
         if k in (
             "read_compression_enabled",

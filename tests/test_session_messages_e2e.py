@@ -157,6 +157,30 @@ async def _seed_quote_status() -> dict:
         return {"sid": sess.id, "eid": entry.id}
 
 
+async def _seed_unfinished_turn() -> dict:
+    factory = get_session_factory()
+    now = _now()
+    async with factory() as s:
+        sess = Session(
+            id=new_id(), started_at=now, ended_at=None, end_reason=None,
+            initiating_user_message="stuck?", turn_count=1,
+            total_input_tokens=0, total_output_tokens=0, total_cache_read=0,
+            total_tool_calls=0, total_llm_calls=0, total_duration_ms=0,
+        )
+        s.add(sess); await s.flush()
+        conv = Conversation(
+            id=new_id(), session_id=sess.id, turn_index=0,
+            started_at=now, ended_at=None,
+            user_message="stuck?", agent_response=None,
+            tool_calls=[], llm_calls=[],
+            total_input_tokens=0, total_output_tokens=0,
+            total_tool_calls=0, total_llm_calls=0, total_duration_ms=0,
+        )
+        s.add(conv)
+        await s.commit()
+        return {"sid": sess.id, "cid": conv.id}
+
+
 async def test_transcript_rewrites_entry_id() -> None:
     seeded = await _seed()
     transport = ASGITransport(app=app)
@@ -194,10 +218,27 @@ async def test_transcript_hides_quote_verification_status() -> None:
             print("[2] transcript hides quote verification status")
 
 
+async def test_transcript_marks_unfinished_turn_interrupted() -> None:
+    seeded = await _seed_unfinished_turn()
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            r = await c.get(f"/v1/sessions/{seeded['sid']}/messages")
+            assert r.status_code == 200, r.text
+            turn = r.json()["turns"][0]
+            assert turn["conversation_id"] == seeded["cid"]
+            assert turn["ended_at"] is None
+            assert turn["agent_response"] is None
+            assert turn["error"]
+            assert "did not finish" in turn["error"]
+            print("[3] transcript marks unfinished turns as interrupted")
+
+
 async def main() -> None:
     await _create_schema()
     await test_transcript_rewrites_entry_id()
     await test_transcript_hides_quote_verification_status()
+    await test_transcript_marks_unfinished_turn_interrupted()
     print("\nALL TESTS PASSED")
 
 

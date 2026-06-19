@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     agent_execute_max_turns: int = 15
     agent_final_answer_continue_turns: int = 3
     agent_final_answer_max_chars: int = 120_000
+    # Hard wall-clock cap for one foreground chat turn. 0 disables the cap.
+    # This is intentionally backend-owned so desktop, web, and CLI clients
+    # get the same stuck-turn recovery behavior.
+    agent_turn_timeout_seconds: float = 1800.0
     read_compression_enabled: bool = True
     read_compression_min_chars: int = 12_000
     read_compression_target_chars: int = 8_000

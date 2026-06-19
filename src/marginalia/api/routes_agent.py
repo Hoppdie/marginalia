@@ -18,13 +18,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.agent.runtime import _public_plan_text, _rewrite_footnotes_for_display
 from marginalia.agent.runtime import _strip_session_name_line
 from marginalia.agent.runtime import TOOL_RESULT_PREVIEW_LEN
 from marginalia.agent import tool_display
-from marginalia.db.models import Session as SessionRow
+from marginalia.db.models import Session as SessionRow, TaskOutcome
 from marginalia.db.session import get_session
 from marginalia.repositories import audit_events as audit_events_repo
 from marginalia.repositories import catalogs as catalogs_repo
@@ -193,6 +194,29 @@ async def session_messages(
             session_mode = mode
             break
 
+    error_by_conversation: dict[str, str] = {}
+    conv_ids = [c.id for c in convs]
+    if conv_ids:
+        rows = (
+            await db.execute(
+                select(TaskOutcome.object_id, TaskOutcome.detail)
+                .where(
+                    TaskOutcome.task_kind == "run_turn",
+                    TaskOutcome.object_kind == "conversation",
+                    TaskOutcome.object_id.in_(conv_ids),
+                    TaskOutcome.outcome == "error",
+                )
+                .order_by(TaskOutcome.completed_at.desc())
+            )
+        ).all()
+        for conversation_id, detail in rows:
+            if conversation_id in error_by_conversation:
+                continue
+            if isinstance(detail, dict):
+                error = detail.get("error")
+                if isinstance(error, str) and error.strip():
+                    error_by_conversation[conversation_id] = error
+
     # Pre-resolve every id referenced by any tool_call in this session
     # so the replay payload mirrors the live SSE shape (each call gets a
     # ready-to-render `display` string). Four batched lookups, regardless
@@ -228,6 +252,12 @@ async def session_messages(
 
     turns: list[dict[str, Any]] = []
     for c in convs:
+        replay_error = error_by_conversation.get(c.id)
+        if c.ended_at is None and replay_error is None:
+            replay_error = (
+                "This turn did not finish. It was likely interrupted before "
+                "Marginalia could persist a final response."
+            )
         plan_text: str | None = None
         for call in c.llm_calls or []:
             if isinstance(call, dict) and call.get("phase") == "plan":
@@ -285,6 +315,7 @@ async def session_messages(
                 await _rewrite_footnotes_for_display(c.agent_response)
                 if c.agent_response else c.agent_response
             ),
+            "error": replay_error,
             "plan_text": plan_text,
             "tool_calls": tool_calls,
             "metrics": {
