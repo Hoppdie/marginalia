@@ -60,3 +60,22 @@ def test_dynamic_runner_reads_current_settings(monkeypatch: pytest.MonkeyPatch) 
     settings.worker_batch_size = 10
 
     assert runner._current_settings().worker_batch_size == 10  # type: ignore[attr-defined]
+
+
+def test_dynamic_runner_uses_current_settings_for_llm_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = {
+        "settings": Settings(llm_default_api_key=""),
+    }
+    monkeypatch.setattr(
+        "marginalia.tasks.runner.get_settings",
+        lambda: current["settings"],
+    )
+
+    runner = TaskRunner()
+    assert not runner._has_llm_key()  # type: ignore[attr-defined]
+
+    current["settings"] = Settings(llm_default_api_key="sk-fake")
+
+    assert runner._has_llm_key()  # type: ignore[attr-defined]

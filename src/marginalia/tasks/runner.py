@@ -57,7 +57,7 @@ class TaskRunner:
 
     def _has_llm_key(self) -> bool:
         try:
-            validate_llm_config(self.settings)
+            validate_llm_config(self._current_settings())
         except LlmConfigError:
             return False
         return True
@@ -136,7 +136,8 @@ class TaskRunner:
 
     async def _claim_batch(self, limit: int) -> list[str]:
         now = _now()
-        lease_until = now + timedelta(seconds=self.settings.worker_lease_seconds)
+        settings = self._current_settings()
+        lease_until = now + timedelta(seconds=settings.worker_lease_seconds)
         async with session_scope() as session:
             rows = await tasks_repo.claim_pending_ids(
                 session,
@@ -239,9 +240,10 @@ class TaskRunner:
             log.exception("failed to record task_outcome for %s", task_id)
 
     async def _heartbeat(self, task_id: str) -> None:
-        interval = self.settings.worker_heartbeat_seconds
         try:
             while True:
+                settings = self._current_settings()
+                interval = settings.worker_heartbeat_seconds
                 await asyncio.sleep(interval)
                 async with session_scope() as session:
                     now = _now()
@@ -249,7 +251,7 @@ class TaskRunner:
                         session,
                         task_id=task_id,
                         lease_until=now + timedelta(
-                            seconds=self.settings.worker_lease_seconds,
+                            seconds=settings.worker_lease_seconds,
                         ),
                         now=now,
                     )
