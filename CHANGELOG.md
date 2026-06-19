@@ -21,6 +21,11 @@
   pipeline, avoiding native rasterization dependencies while preserving
   searchable SVG structure and labels.
 
+### Fixed
+
+- Desktop latest-version checks now allow GitHub release API requests in the
+  packaged app CSP, fixing "Failed to fetch" on the About page.
+
 ## 0.2.5 - 2026-06-18
 
 ### Added
