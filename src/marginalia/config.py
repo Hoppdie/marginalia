@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -127,35 +127,10 @@ class Settings(BaseSettings):
     # Unified compression switch. Only COMPRESSION_ENABLED controls all
     # Headroom-backed ingest, query, and read_files compression paths.
     compression_enabled: bool = Field(True, validation_alias="COMPRESSION_ENABLED")
-    compression_min_chars: int = Field(
-        12_000,
-        validation_alias=AliasChoices(
-            "COMPRESSION_MIN_CHARS",
-            "READ_COMPRESSION_MIN_CHARS",
-            "HEADROOM_COMPRESSION_MIN_CHARS",
-        ),
-    )
-    compression_target_chars: int = Field(
-        8_000,
-        validation_alias=AliasChoices(
-            "COMPRESSION_TARGET_CHARS",
-            "READ_COMPRESSION_TARGET_CHARS",
-        ),
-    )
-    compression_context_chars: int = Field(
-        220,
-        validation_alias=AliasChoices(
-            "COMPRESSION_CONTEXT_CHARS",
-            "READ_COMPRESSION_CONTEXT_CHARS",
-        ),
-    )
-    compression_max_ratio: float = Field(
-        0.85,
-        validation_alias=AliasChoices(
-            "COMPRESSION_MAX_RATIO",
-            "HEADROOM_COMPRESSION_MAX_RATIO",
-        ),
-    )
+    compression_min_chars: int = Field(12_000, validation_alias="COMPRESSION_MIN_CHARS")
+    compression_target_chars: int = Field(8_000, validation_alias="COMPRESSION_TARGET_CHARS")
+    compression_context_chars: int = Field(220, validation_alias="COMPRESSION_CONTEXT_CHARS")
+    compression_max_ratio: float = Field(0.85, validation_alias="COMPRESSION_MAX_RATIO")
     # Bounded fan-out for ingest-time LLM work: long text/PDF chunk
     # indexing and scanned-PDF OCR page calls. Keep this conservative;
     # provider rate limits and local network bandwidth are the real cap.

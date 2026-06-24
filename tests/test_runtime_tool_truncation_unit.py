@@ -129,20 +129,3 @@ def test_overlay_accepts_unified_compression_fields() -> None:
         except OverlayValidationError:
             continue
         raise AssertionError(f"expected validation error for {bad!r}")
-
-def test_overlay_drops_legacy_compression_switches() -> None:
-    from marginalia.services import config_overlay as mod
-
-    cleaned = mod._canonical_overlay({
-        "read_compression_enabled": "false",
-        "headroom_compression_enabled": "false",
-        "read_compression_min_chars": "2048",
-        "headroom_compression_max_ratio": "0.75",
-        "headroom_query_compression_enabled": True,
-        "headroom_ingest_compression_enabled": True,
-    })
-
-    assert cleaned == {
-        "compression_min_chars": "2048",
-        "compression_max_ratio": "0.75",
-    }

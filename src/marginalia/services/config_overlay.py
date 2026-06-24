@@ -81,13 +81,6 @@ _ALLOWED_FIELDS: frozenset[str] = frozenset({
     "evidence_selection",
 })
 
-_LEGACY_FIELD_ALIASES: dict[str, str] = {
-    "read_compression_min_chars": "compression_min_chars",
-    "read_compression_target_chars": "compression_target_chars",
-    "read_compression_context_chars": "compression_context_chars",
-    "headroom_compression_min_chars": "compression_min_chars",
-    "headroom_compression_max_ratio": "compression_max_ratio",
-}
 _VALID_PROVIDERS: frozenset[str] = frozenset({"openai", "openai-compatible", "anthropic"})
 _VALID_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"dashscope", "openai-compatible"})
 _VALID_SEMANTIC_INDEX_BACKENDS: frozenset[str] = frozenset({"auto", "file", "sqlite-vec"})
@@ -117,11 +110,7 @@ def read_overlay(home: str | os.PathLike[str]) -> dict[str, Any]:
 
 
 def _canonical_overlay(raw: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in raw.items() if k in _ALLOWED_FIELDS}
-    for old, new in _LEGACY_FIELD_ALIASES.items():
-        if old in raw and new not in out:
-            out[new] = raw[old]
-    return out
+    return {k: v for k, v in raw.items() if k in _ALLOWED_FIELDS}
 
 
 def write_overlay(home: str | os.PathLike[str], values: dict[str, Any]) -> None:
