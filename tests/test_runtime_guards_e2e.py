@@ -49,6 +49,7 @@ from marginalia.llm.types import (
 from marginalia.utils.ids import new_id
 import marginalia.agent.runtime as runtime
 from marginalia.agent import tools as tools_pkg
+from marginalia.agent.stable_context import PLAN_PHASE_PROMPT
 
 
 def _stored_plan_text(conv: Conversation) -> str:
@@ -195,6 +196,15 @@ async def test_no_plan_fast_path() -> None:
 
 
 # ---- 2. tool dedup ---------------------------------------------------------
+
+
+def test_no_plan_prompt_excludes_factual_questions() -> None:
+    assert "Use only for conversational turns" in PLAN_PHASE_PROMPT
+    assert "Never use `NO_PLAN` for questions" in PLAN_PHASE_PROMPT
+    assert "ask for a number/code/procedure" in PLAN_PHASE_PROMPT
+    assert "mention a file/document/note/table/" in PLAN_PHASE_PROMPT
+    assert "current/realtime/external fact" in PLAN_PHASE_PROMPT
+
 
 async def test_tool_dedup() -> None:
     sid = await _open_session("dedup test")

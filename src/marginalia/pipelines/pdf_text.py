@@ -18,6 +18,7 @@ from marginalia.storage.base import StorageBackend
 
 PDF_TEXT_CACHE_MAX_DOCS = 6
 PDF_LABEL_CACHE_MAX_DOCS = 32
+_CJK_RANGES = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 
 
 @dataclass(slots=True)
@@ -76,7 +77,7 @@ def extract_pdf_text_range(
     pages: list[str] = []
     for page in reader.pages[start - 1:end]:
         try:
-            pages.append(page.extract_text() or "")
+            pages.append(_extract_page_text(page))
         except Exception:  # noqa: BLE001
             pages.append("")
     labels = _labels_from_reader(reader, total)[start - 1:end]
@@ -177,6 +178,55 @@ def render_pdf_text_pages(doc: PdfTextRange) -> str:
         label_line = "" if label == str(page) else f"\n[Page label: {label}]"
         chunks.append(f"[Page {page}]{label_line}\n{txt}")
     return "\n\n".join(chunks)
+
+
+def _extract_page_text(page: Any) -> str:
+    """Extract one PDF page using layout mode when available.
+
+    Plain pypdf extraction follows content-stream order, which often breaks
+    tables with row-spanned cells: the row header can appear several lines
+    after the cells it labels. Layout mode keeps visual rows together; we then
+    normalize the extreme spacing into readable separators.
+    """
+    try:
+        layout = page.extract_text(
+            extraction_mode="layout",
+            layout_mode_space_vertically=False,
+        ) or ""
+    except Exception:  # noqa: BLE001 - fall back to plain extraction per page
+        layout = ""
+    if layout.strip():
+        cleaned = _clean_layout_text(layout)
+        if cleaned:
+            return cleaned
+    return page.extract_text() or ""
+
+
+def _clean_layout_text(text: str) -> str:
+    text = text.replace("\t", " ").replace("\u3000", " ")
+    out: list[str] = []
+    blank_count = 0
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        line = re.sub(r" {4,}", " | ", line)
+        line = re.sub(rf"(?<=[{_CJK_RANGES}]) (?=[{_CJK_RANGES}])", "", line)
+        line = re.sub(rf"(?<=[{_CJK_RANGES}]) (?=[，。；：！？、）])", "", line)
+        line = re.sub(rf"(?<=[（]) (?=[{_CJK_RANGES}A-Za-z0-9])", "", line)
+        line = re.sub(r" {2,}", " ", line).strip()
+        line = line.strip("| ").strip()
+        line = re.sub(
+            rf"(?<=[{_CJK_RANGES}]) \| (?=[{_CJK_RANGES}][。；，、！？])",
+            "",
+            line,
+        )
+        if not line:
+            blank_count += 1
+            if blank_count <= 1:
+                out.append("")
+            continue
+        blank_count = 0
+        out.append(line)
+    return "\n".join(out).strip()
 
 
 def _labels_from_reader(reader: Any, total: int) -> list[str]:

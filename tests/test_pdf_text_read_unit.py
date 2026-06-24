@@ -49,6 +49,51 @@ def _with_labels(pdf_bytes: bytes) -> bytes:
     return out.getvalue()
 
 
+def _build_stream_order_table_pdf() -> bytes:
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=400, height=300)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+    })
+
+    ops: list[str] = []
+
+    def text_at(x: int, y: int, text: str) -> None:
+        safe = text.replace("\\", "\\\\").replace("(", r"\(").replace(")", r"\)")
+        ops.append(f"BT /F1 11 Tf 1 0 0 1 {x} {y} Tm ({safe}) Tj ET")
+
+    # Cells are deliberately written before row headers. Plain extraction
+    # follows this stream order; layout extraction should restore visual rows.
+    for y, label, body in [
+        (230, "Message", "Communication timeout."),
+        (216, "Cause", "Timeout talking to servo."),
+        (202, "Action", "Power off and restart."),
+        (188, "Message", "Driver not connected."),
+        (174, "Cause", "Servo driver cannot be found."),
+        (160, "Action", "Check cable and driver power."),
+        (146, "Message", "Driver count abnormal."),
+    ]:
+        text_at(90, y, label)
+        text_at(165, y, body)
+    text_at(30, 230, "H8820")
+    text_at(30, 188, "H8830")
+
+    stream = DecodedStreamObject()
+    stream.set_data("\n".join(ops).encode("ascii"))
+    page.replace_contents(stream)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def test_pdf_page_labels_map_printed_page_to_physical_page() -> None:
     pdf_bytes = _with_labels(_build_text_pdf(8))
 
@@ -76,6 +121,28 @@ def test_pdf_page_window_extracts_only_requested_pages() -> None:
     assert seg.error is None
     assert "Unique token p025" in seg.text
     assert "Unique token p001" not in seg.text
+
+
+def test_pdf_layout_extraction_keeps_table_row_headers_with_cells() -> None:
+    pdf_bytes = _build_stream_order_table_pdf()
+    doc = extract_pdf_text_range(pdf_bytes, page_start=1, page_end=1)
+    text = doc.pages[0]
+
+    assert "H8830 | Message | Driver not connected." in text
+    assert "Message | Driver count abnormal.\nH8830" not in text
+
+    seg = PdfPipeline()._slice(
+        pdf_bytes,
+        {
+            "page_start": 1,
+            "page_end": 1,
+            "pattern": "H8830|Driver not connected",
+            "context_lines": 1,
+            "max_matches": 2,
+        },
+    )
+    assert seg.error is None
+    assert "H8830 | Message | Driver not connected." in seg.text
 
 
 def test_pdf_default_read_is_windowed_for_long_documents() -> None:

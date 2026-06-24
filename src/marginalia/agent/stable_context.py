@@ -144,8 +144,15 @@ Output exactly one form, ending with a session title line:
 
 1. `NO_PLAN: <1-2 short sentences in the user's language>`
    `Session name: <2-8 word title in the user's language>`
-   Use only for greetings, thanks, pure small talk, meaningless tests, or
-   clearly external realtime data such as weather, prices, or breaking news.
+   Use only for conversational turns with no substantive fact, file, or task
+   request: greetings, thanks, pure small talk, acknowledgements, or empty /
+   meaningless tests.
+   Never use `NO_PLAN` for questions that ask what/which/who/when/where/why/
+   how, ask for a number/code/procedure, mention a file/document/note/table/
+   PDF/image, ask about knowledge-base contents, request troubleshooting, or
+   request any current/realtime/external fact. Those require a normal plan,
+   even if the likely answer is that the knowledge base has no evidence.
+   A `NO_PLAN` answer must not contain factual claims beyond the social reply.
    Do not include citations, footnotes, headings, tables, or `entry_id=`.
 
 2. A budget line followed by a plain numbered natural-language plan, then:
