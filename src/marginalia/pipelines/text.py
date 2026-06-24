@@ -22,7 +22,7 @@ import re
 from dataclasses import replace
 from typing import Any
 
-from marginalia.agent.headroom_adapter import (
+from marginalia.agent.compression_adapter import (
     maybe_compress_ingest_aggregate_view,
     maybe_compress_ingest_view,
 )
@@ -233,7 +233,7 @@ class TextPipeline(Pipeline):
             "indexed_bytes": indexed_bytes,
             "total_bytes": total_bytes,
         }
-        body_for_index, headroom_meta = maybe_compress_ingest_view(
+        body_for_index, compression_meta = maybe_compress_ingest_view(
             body,
             kind="text",
             context=ctx.display_name or "",
@@ -299,8 +299,8 @@ class TextPipeline(Pipeline):
             chunk_count=1,
             read_truncated=read_truncated,
         )
-        if headroom_meta is not None:
-            coverage["headroom_compression"] = headroom_meta
+        if compression_meta is not None:
+            coverage["compression"] = compression_meta
         return self._result_from_fields(
             fields=fields,
             sections=renumber_sections(sections),
@@ -434,7 +434,7 @@ class TextPipeline(Pipeline):
             context=ctx.display_name or "",
         )
         if aggregate_meta is not None:
-            coverage["headroom_aggregate_compression"] = aggregate_meta
+            coverage["aggregate_compression"] = aggregate_meta
         request = ChatRequest(
             system=TEXT_AGGREGATE_SYSTEM,
             messages=cacheable_prompt_messages(

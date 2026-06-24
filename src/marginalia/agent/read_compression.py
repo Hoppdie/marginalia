@@ -1,17 +1,16 @@
-"""Headroom-backed compression for read_files results.
+"""Built-in compression for read_files results.
 
 The public function remains ``compress_read_text`` so the read_files tool keeps
 one stable integration point. The implementation delegates compression to
-Headroom transforms and fails open to the original text whenever Headroom is not
-installed, cannot compress the content, or does not beat the configured savings
-threshold.
+built-in transforms and fails open to the original text whenever compression
+cannot shrink the content or does not beat the configured savings threshold.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from marginalia.agent.headroom_adapter import maybe_compress_read_view
+from marginalia.agent.compression_adapter import maybe_compress_read_view
 
 CODE_AUTO_MIN_CHARS = 64_000
 _CODE_EXTS = {
@@ -74,7 +73,7 @@ def compress_read_text(
     source_ext: str = "",
     settings: CompressionSettings | None = None,
 ) -> ReadCompressionResult:
-    """Compress a read_files text result with Headroom when it is worthwhile."""
+    """Compress a read_files text result when it is worthwhile."""
     cfg = settings or CompressionSettings()
     original_len = len(text or "")
     extras = dict(extras or {})
@@ -130,7 +129,7 @@ def compress_read_text(
         original_chars=original_len,
         compressed_chars=len(compressed.text),
         omitted=omitted,
-        note="Read result compressed by Headroom; reopen omitted args for exact text.",
+        note="Read result compressed; reopen omitted args for exact text.",
         extra=compressed.metadata(),
     )
 

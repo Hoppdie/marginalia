@@ -207,7 +207,7 @@ async def test_pdf_long_ingest_chunks_then_aggregates(
     def fake_compress_aggregate(body: str, *, kind: str, context: str):
         aggregate_calls.append(kind)
         return "compressed aggregate prompt", {
-            "strategy": "headroom.kompress",
+            "strategy": "marginalia.text_extract",
             "aggregate": True,
             "kind": kind,
         }
@@ -228,7 +228,7 @@ async def test_pdf_long_ingest_chunks_then_aggregates(
     assert coverage["total_pages"] == 65
     assert coverage["indexed_pages"] == 65
     assert coverage["indexed_partial"] is False
-    assert coverage["headroom_aggregate_compression"]["kind"] == "pdf_aggregate"
+    assert coverage["aggregate_compression"]["kind"] == "pdf_aggregate"
     assert aggregate_calls == ["pdf_aggregate"]
     assert len(result.description["sections"]) == 2
     assert result.description["sections"][1]["anchor"]["value"] == "41-65"
@@ -282,7 +282,7 @@ async def test_text_long_ingest_chunks_then_aggregates(
     def fake_compress_aggregate(body: str, *, kind: str, context: str):
         aggregate_calls.append(kind)
         return "compressed aggregate prompt", {
-            "strategy": "headroom.kompress",
+            "strategy": "marginalia.text_extract",
             "aggregate": True,
             "kind": kind,
         }
@@ -302,7 +302,7 @@ async def test_text_long_ingest_chunks_then_aggregates(
     coverage = result.description["coverage"]
     assert coverage["chunked"] is True
     assert coverage["indexed_partial"] is False
-    assert coverage["headroom_aggregate_compression"]["kind"] == "text_aggregate"
+    assert coverage["aggregate_compression"]["kind"] == "text_aggregate"
     assert aggregate_calls == ["text_aggregate"]
     assert len(result.description["sections"]) >= 2
     assert result.description["sections"][0]["anchor"]["unit"] == "lines"

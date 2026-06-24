@@ -15,7 +15,7 @@ import json
 import logging
 from typing import Any
 
-from marginalia.agent.headroom_adapter import maybe_compress_ingest_view
+from marginalia.agent.compression_adapter import maybe_compress_ingest_view
 from marginalia.llm import ChatRequest, cacheable_prompt_messages, get_chat_client
 from marginalia.llm.tagged_response import (
     parse_path,
@@ -84,13 +84,13 @@ async def index_extracted_text(
             entry_catalog_path=None,
             entry_tags=[],
         )
-    body_for_index, headroom_meta = maybe_compress_ingest_view(
+    body_for_index, compression_meta = maybe_compress_ingest_view(
         body,
         kind=kind,
         context=ctx.display_name or "",
     )
-    if headroom_meta is not None:
-        coverage["headroom_compression"] = headroom_meta
+    if compression_meta is not None:
+        coverage["compression"] = compression_meta
     user_payload = {
         "folder_path": ctx.folder_path,
         "sibling_names": ctx.sibling_names,

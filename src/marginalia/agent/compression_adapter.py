@@ -1,9 +1,9 @@
-"""Headroom compression bridge.
+"""Built-in model-view compression bridge.
 
-Headroom is a standard dependency for Marginalia. This module still keeps the
-runtime boundary fail-open: if a specific Headroom transform or model runtime
-cannot compress a payload, callers receive ``None`` and keep the original
-prompt payload.
+Marginalia keeps the deterministic compression surface it uses in-tree so
+release builds do not need a separate compression package. The runtime boundary
+remains fail-open: if a local compressor cannot shrink a payload, callers
+receive ``None`` and keep the original prompt payload.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ _ARCHIVE_PREVIEW_MIN_CHARS = 900
 
 
 @dataclass(slots=True)
-class HeadroomText:
+class CompressedText:
     text: str
     strategy: str
     original_chars: int
@@ -84,7 +84,7 @@ def maybe_compress_tool_result_for_model(
     try:
         compressed = _compress_query_payload(tool_name, payload, context=context)
     except Exception as exc:  # noqa: BLE001 - optional dependency boundary
-        log.debug("Headroom query compression skipped for %s: %r", tool_name, exc)
+        log.debug("Query compression skipped for %s: %r", tool_name, exc)
         return None
     if compressed is None or not compressed.text.strip():
         return None
@@ -114,7 +114,7 @@ def maybe_compress_ingest_view(
     try:
         compressed = _compress_ingest_text(body, kind=kind, context=context)
     except Exception as exc:  # noqa: BLE001 - optional dependency boundary
-        log.debug("Headroom ingest compression skipped for %s: %r", kind, exc)
+        log.debug("Ingest compression skipped for %s: %r", kind, exc)
         return body, None
     if compressed is None or not compressed.text.strip():
         return body, None
@@ -138,8 +138,8 @@ def maybe_compress_read_view(
     source_ext: str = "",
     member_path: str = "",
     allow_code: bool = False,
-) -> HeadroomText | None:
-    """Compress a read_files model view using Headroom transforms."""
+) -> CompressedText | None:
+    """Compress a read_files model view using built-in transforms."""
     if not body.strip():
         return None
     try:
@@ -155,7 +155,7 @@ def maybe_compress_read_view(
             allow_code=allow_code,
         )
     except Exception as exc:  # noqa: BLE001 - optional dependency boundary
-        log.debug("Headroom read compression skipped for %s/%s: %r", pipeline, kind, exc)
+        log.debug("Read compression skipped for %s/%s: %r", pipeline, kind, exc)
         return None
 
 
@@ -164,7 +164,7 @@ def _compress_query_payload(
     payload: Any,
     *,
     context: str,
-) -> HeadroomText | None:
+) -> CompressedText | None:
     if tool_name == "query_log":
         search_text = _render_query_log_search(payload)
         if search_text:
@@ -196,7 +196,7 @@ def maybe_compress_ingest_aggregate_view(
             target_ratio=_settings_target_ratio(settings, len(body)),
         )
     except Exception as exc:  # noqa: BLE001 - optional dependency boundary
-        log.debug("Headroom aggregate compression skipped for %s: %r", kind, exc)
+        log.debug("Aggregate compression skipped for %s: %r", kind, exc)
         return body, None
     if compressed is None or not compressed.text.strip():
         return body, None
@@ -243,7 +243,7 @@ def maybe_compress_archive_peeks(
                 allow_code=True,
             )
         except Exception as exc:  # noqa: BLE001 - optional dependency boundary
-            log.debug("Headroom archive peek compression skipped for %s: %r", path, exc)
+            log.debug("Archive peek compression skipped for %s: %r", path, exc)
             out.append(item)
             continue
         if compressed is None or not compressed.text.strip():
@@ -259,7 +259,7 @@ def maybe_compress_archive_peeks(
         item["preview"] = compressed.text
         meta = compressed.metadata()
         meta["reopen"] = {"member_path": path, "compress": False}
-        item["headroom_compression"] = meta
+        item["compression"] = meta
         out.append(item)
     return out
 
@@ -269,7 +269,7 @@ def _compress_ingest_text(
     *,
     kind: str,
     context: str,
-) -> HeadroomText | None:
+) -> CompressedText | None:
     k = (kind or "").lower()
     if k == "log":
         return _compress_log_text(body, context=context)
@@ -304,7 +304,7 @@ def _compress_read_text(
     source_ext: str = "",
     member_path: str = "",
     allow_code: bool = False,
-) -> HeadroomText | None:
+) -> CompressedText | None:
     route = _read_route(
         body,
         pipeline=pipeline,
@@ -332,60 +332,95 @@ def _compress_read_text(
     return compressed
 
 
-def _compress_log_text(text: str, *, context: str) -> HeadroomText | None:
-    from headroom.transforms.log_compressor import (  # type: ignore[import-not-found]
-        LogCompressor,
-        LogCompressorConfig,
-    )
-
-    result = LogCompressor(LogCompressorConfig(enable_ccr=False)).compress(
-        text,
+def _compress_log_text(text: str, *, context: str) -> CompressedText | None:
+    lines = text.splitlines()
+    if len(lines) < 8:
+        return None
+    keep = _select_line_indexes(
+        lines,
         context=context,
+        max_lines=max(24, min(180, len(lines) // 5)),
+        signal_re=_LOG_SIGNAL_RE,
     )
-    compressed = str(result.compressed)
-    if compressed == text:
+    compressed = _format_selected_lines(
+        "compressed log view",
+        lines,
+        keep,
+    )
+    if compressed == text or len(compressed) >= len(text):
         return None
-    return HeadroomText(
+    return CompressedText(
         text=compressed,
-        strategy="headroom.log",
+        strategy="marginalia.log",
         original_chars=len(text),
         compressed_chars=len(compressed),
         extra={
-            "line_count_before": getattr(result, "original_line_count", None),
-            "line_count_after": getattr(result, "compressed_line_count", None),
-            "format": getattr(getattr(result, "format_detected", None), "value", None),
+            "line_count_before": len(lines),
+            "line_count_after": len(keep),
+            "format": "text-log",
             "lossy": True,
+            "local": True,
         },
     )
 
-
-def _compress_search_text(text: str, *, context: str) -> HeadroomText | None:
-    from headroom.transforms.search_compressor import (  # type: ignore[import-not-found]
-        SearchCompressor,
-        SearchCompressorConfig,
-    )
-
-    result = SearchCompressor(
-        SearchCompressorConfig(enable_ccr=False, group_by_file=True),
-    ).compress(text, context=context)
-    compressed = str(result.compressed)
-    if compressed == text:
+def _compress_search_text(text: str, *, context: str) -> CompressedText | None:
+    matches = _parse_search_matches(text)
+    if len(matches) < 4:
         return None
-    return HeadroomText(
+    query_terms = _query_terms(context)
+    grouped: dict[str, list[tuple[int, str, str]]] = {}
+    for idx, path, line_no, body in matches:
+        grouped.setdefault(path, []).append((idx, line_no, body))
+
+    selected: set[int] = set()
+    for rows in grouped.values():
+        rows_sorted = sorted(rows)
+        for idx, _, _body in rows_sorted[:2] + rows_sorted[-1:]:
+            selected.add(idx)
+        if query_terms:
+            ranked = sorted(
+                rows_sorted,
+                key=lambda row: _term_score(row[2], query_terms),
+                reverse=True,
+            )
+            for idx, _, _ in ranked[:3]:
+                selected.add(idx)
+    if len(selected) > 180:
+        selected = set(sorted(selected)[:180])
+
+    parts = [
+        "# compressed search view",
+        f"# original_matches={len(matches)} kept_matches={len(selected)} files={len(grouped)}",
+    ]
+    omitted = len(matches) - len(selected)
+    if omitted > 0:
+        parts.append(f"# omitted_matches={omitted}")
+    current = ""
+    for idx, path, line_no, body in matches:
+        if idx not in selected:
+            continue
+        if path != current:
+            current = path
+            parts.append(f"\n## {path}")
+        parts.append(f"{line_no}: {body}")
+    compressed = "\n".join(parts).strip() + "\n"
+    if len(compressed) >= len(text):
+        return None
+    return CompressedText(
         text=compressed,
-        strategy="headroom.search",
+        strategy="marginalia.search",
         original_chars=len(text),
         compressed_chars=len(compressed),
         extra={
-            "match_count_before": getattr(result, "original_match_count", None),
-            "match_count_after": getattr(result, "compressed_match_count", None),
-            "files_affected": getattr(result, "files_affected", None),
+            "match_count_before": len(matches),
+            "match_count_after": len(selected),
+            "files_affected": len(grouped),
             "lossy": True,
+            "local": True,
         },
     )
 
-
-def _compress_json_text(text: str, *, context: str) -> HeadroomText | None:
+def _compress_json_text(text: str, *, context: str) -> CompressedText | None:
     try:
         parsed = json.loads(text)
     except (TypeError, ValueError):
@@ -419,7 +454,7 @@ def _compress_json_text(text: str, *, context: str) -> HeadroomText | None:
     return None
 
 
-def _compress_table_text(text: str, *, context: str) -> HeadroomText | None:
+def _compress_table_text(text: str, *, context: str) -> CompressedText | None:
     records = _records_from_table_text(text)
     if not records:
         return None
@@ -439,100 +474,98 @@ def _compress_records(
     original_chars: int | None = None,
     source_format: str = "records",
     lossy: bool = False,
-) -> HeadroomText | None:
-    from headroom.config import CCRConfig  # type: ignore[import-not-found]
-    from headroom.transforms.smart_crusher import (  # type: ignore[import-not-found]
-        SmartCrusher,
-    )
-
-    original = json.dumps(records, ensure_ascii=False, default=str)
-    crusher = SmartCrusher(
-        ccr_config=CCRConfig(enabled=False, inject_retrieval_marker=False),
-        lossless_only=True,
-        with_compaction=True,
-    )
-    result = crusher.crush(original, query=context, lossless_only=True)
-    compressed = str(result.compressed)
-    if not getattr(result, "was_modified", False) or compressed == original:
+) -> CompressedText | None:
+    if len(records) < 2:
         return None
-    return HeadroomText(
+    original = json.dumps(records, ensure_ascii=False, default=str)
+    query_terms = _query_terms(context)
+    fields = _record_fields(records)
+    selected = _select_record_indexes(records, query_terms=query_terms, max_records=24)
+    sample = [_compact_record(records[idx], fields=fields) for idx in selected]
+    payload = {
+        "record_count": len(records),
+        "fields": fields,
+        "sample_count": len(sample),
+        "omitted_records": max(0, len(records) - len(sample)),
+        "sample": sample,
+    }
+    compressed = json.dumps(payload, ensure_ascii=False, default=str, indent=2)
+    original_len = original_chars or len(original)
+    if len(compressed) >= original_len:
+        return None
+    if source_format.startswith("json"):
+        suffix = "json"
+    elif "table" in source_format:
+        suffix = "table"
+    else:
+        suffix = "records"
+    return CompressedText(
         text=compressed,
-        strategy=f"headroom.smart_crusher.{getattr(result, 'strategy', 'unknown')}",
-        original_chars=original_chars or len(original),
+        strategy=f"marginalia.smart_crusher.{suffix}",
+        original_chars=original_len,
         compressed_chars=len(compressed),
         extra={
             "record_count": len(records),
-            "lossless_only": True,
+            "lossless_only": False,
             "source_format": source_format,
-            "lossy": lossy,
+            "sample_count": len(sample),
+            "omitted_records": max(0, len(records) - len(sample)),
+            "lossy": True if len(sample) < len(records) else lossy,
+            "local": True,
         },
     )
 
-
-def _compress_plain_text(text: str, *, context: str, target_ratio: float) -> HeadroomText | None:
-    from headroom.transforms.kompress_compressor import (  # type: ignore[import-not-found]
-        KompressCompressor,
-        KompressConfig,
-        is_kompress_available,
-    )
-
-    if not is_kompress_available():
-        return None
-    ratio = _clamp_ratio(target_ratio)
-    result = KompressCompressor(KompressConfig(enable_ccr=False)).compress(
+def _compress_plain_text(text: str, *, context: str, target_ratio: float) -> CompressedText | None:
+    target_chars = max(800, int(len(text) * _clamp_ratio(target_ratio)))
+    compressed = _extract_text_view(
         text,
         context=context,
-        target_ratio=ratio,
-        allow_download=False,
+        target_chars=target_chars,
+        title="compressed text view",
     )
-    compressed = str(result.compressed)
-    if compressed == text:
+    if compressed is None or len(compressed) >= len(text):
         return None
-    return HeadroomText(
+    return CompressedText(
         text=compressed,
-        strategy="headroom.kompress",
+        strategy="marginalia.text_extract",
         original_chars=len(text),
         compressed_chars=len(compressed),
         extra={
-            "original_tokens": getattr(result, "original_tokens", None),
-            "compressed_tokens": getattr(result, "compressed_tokens", None),
-            "compression_ratio": getattr(result, "compression_ratio", None),
-            "model_used": getattr(result, "model_used", None),
+            "compression_ratio": round(len(compressed) / max(1, len(text)), 4),
+            "target_ratio": _clamp_ratio(target_ratio),
             "lossy": True,
+            "local": True,
         },
     )
 
-
-def _compress_code_text(text: str, *, context: str, target_ratio: float) -> HeadroomText | None:
-    from headroom.transforms.code_compressor import (  # type: ignore[import-not-found]
-        CodeAwareCompressor,
-        CodeCompressorConfig,
-    )
-
-    ratio = _clamp_ratio(target_ratio)
-    result = CodeAwareCompressor(
-        CodeCompressorConfig(
-            target_compression_rate=ratio,
-            min_tokens_for_compression=1,
-            fallback_to_kompress=False,
-            enable_ccr=False,
-        )
-    ).compress(text, context=context)
-    compressed = str(result.compressed)
-    if compressed == text:
+def _compress_code_text(text: str, *, context: str, target_ratio: float) -> CompressedText | None:
+    lines = text.splitlines()
+    keep: set[int] = set(range(min(20, len(lines))))
+    keep.update(range(max(0, len(lines) - 12), len(lines)))
+    query_terms = _query_terms(context)
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if _CODE_LINE_RE.search(line) or stripped.startswith(("#", "//", "/*", "*")):
+            keep.add(idx)
+        elif query_terms and _term_score(line, query_terms) > 0:
+            _add_window(keep, idx, len(lines), radius=2)
+        if len(keep) >= max(40, min(220, len(lines) // 3)):
+            break
+    compressed = _format_selected_lines("compressed code view", lines, sorted(keep))
+    if len(compressed) >= len(text):
         return None
-    return HeadroomText(
+    return CompressedText(
         text=compressed,
-        strategy="headroom.code_aware",
+        strategy="marginalia.code_aware",
         original_chars=len(text),
         compressed_chars=len(compressed),
         extra={
-            "language": getattr(getattr(result, "language", None), "value", None),
-            "syntax_valid": getattr(result, "syntax_valid", None),
+            "language": None,
+            "syntax_valid": None,
             "lossy": True,
+            "local": True,
         },
     )
-
 
 def _read_route(
     text: str,
@@ -662,10 +695,10 @@ def _append_log_matches(lines: list[str], result: dict[str, Any]) -> None:
         lines.append(f"{name}:{line_no}:{text}")
 
 
-def _tool_envelope(tool_name: str, payload: Any, compressed: HeadroomText) -> dict[str, Any]:
+def _tool_envelope(tool_name: str, payload: Any, compressed: CompressedText) -> dict[str, Any]:
     envelope: dict[str, Any] = {
         "ok": payload.get("ok", True) if isinstance(payload, dict) else True,
-        "headroom_compressed": True,
+        "compressed_for_model": True,
         "tool": tool_name,
         "compression": compressed.metadata(),
         "compressed_text": compressed.text,
@@ -784,6 +817,175 @@ def _beats_threshold(*, original_chars: int, compressed_chars: int, max_ratio: f
         return False
     return compressed_chars < int(original_chars * max_ratio)
 
+
+
+def _query_terms(context: str) -> list[str]:
+    terms: list[str] = []
+    for raw in re.findall(r"[A-Za-z0-9_./:-]{3,}", context.lower()):
+        if raw not in terms:
+            terms.append(raw)
+        if len(terms) >= 16:
+            break
+    return terms
+
+
+def _term_score(text: str, terms: list[str]) -> int:
+    if not terms:
+        return 0
+    haystack = text.lower()
+    return sum(1 for term in terms if term in haystack)
+
+
+def _select_line_indexes(
+    lines: list[str],
+    *,
+    context: str,
+    max_lines: int,
+    signal_re: re.Pattern[str] | None = None,
+) -> list[int]:
+    if len(lines) <= max_lines:
+        return list(range(len(lines)))
+    keep: set[int] = set(range(min(8, len(lines))))
+    keep.update(range(max(0, len(lines) - 6), len(lines)))
+    terms = _query_terms(context)
+    scored: list[tuple[int, int]] = []
+    for idx, line in enumerate(lines):
+        score = _term_score(line, terms)
+        if signal_re is not None and signal_re.search(line):
+            score += 2
+        if line.lstrip().startswith(("#", "##", "###")):
+            score += 1
+        if score:
+            scored.append((score, idx))
+    for _, idx in sorted(scored, reverse=True):
+        _add_window(keep, idx, len(lines), radius=1)
+        if len(keep) >= max_lines:
+            break
+    if len(keep) < max_lines:
+        stride = max(1, len(lines) // max(1, max_lines - len(keep)))
+        for idx in range(0, len(lines), stride):
+            keep.add(idx)
+            if len(keep) >= max_lines:
+                break
+    return sorted(keep)
+
+
+def _add_window(keep: set[int], idx: int, total: int, *, radius: int) -> None:
+    for pos in range(max(0, idx - radius), min(total, idx + radius + 1)):
+        keep.add(pos)
+
+
+def _format_selected_lines(title: str, lines: list[str], keep: list[int] | set[int]) -> str:
+    ordered = sorted(keep)
+    parts = [
+        f"# {title}",
+        f"# original_lines={len(lines)} kept_lines={len(ordered)} omitted_lines={max(0, len(lines) - len(ordered))}",
+    ]
+    prev = -1
+    for idx in ordered:
+        if idx < 0 or idx >= len(lines):
+            continue
+        if prev >= 0 and idx > prev + 1:
+            parts.append(f"# ... omitted {idx - prev - 1} lines ...")
+        parts.append(f"{idx + 1}: {lines[idx]}")
+        prev = idx
+    return "\n".join(parts).strip() + "\n"
+
+
+def _parse_search_matches(text: str) -> list[tuple[int, str, str, str]]:
+    matches: list[tuple[int, str, str, str]] = []
+    for idx, line in enumerate(text.splitlines()):
+        match = re.match(r"^([^\s:][^:]*):(\d+):(.*)$", line)
+        if not match:
+            continue
+        matches.append((idx, match.group(1), match.group(2), match.group(3).strip()))
+    return matches
+
+
+def _record_fields(records: list[dict[str, Any]]) -> list[str]:
+    counts: dict[str, int] = {}
+    for record in records:
+        for key in record:
+            counts[str(key)] = counts.get(str(key), 0) + 1
+    return [key for key, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:32]]
+
+
+def _select_record_indexes(
+    records: list[dict[str, Any]],
+    *,
+    query_terms: list[str],
+    max_records: int,
+) -> list[int]:
+    if len(records) <= max_records:
+        return list(range(len(records)))
+    keep: set[int] = set(range(min(5, len(records))))
+    keep.update(range(max(0, len(records) - 3), len(records)))
+    if query_terms:
+        scored: list[tuple[int, int]] = []
+        for idx, record in enumerate(records):
+            text = json.dumps(record, ensure_ascii=False, default=str)
+            score = _term_score(text, query_terms)
+            if score:
+                scored.append((score, idx))
+        for _, idx in sorted(scored, reverse=True):
+            keep.add(idx)
+            if len(keep) >= max_records:
+                break
+    if len(keep) < max_records:
+        stride = max(1, len(records) // max(1, max_records - len(keep)))
+        for idx in range(0, len(records), stride):
+            keep.add(idx)
+            if len(keep) >= max_records:
+                break
+    return sorted(keep)
+
+
+def _compact_record(record: dict[str, Any], *, fields: list[str]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for field in fields:
+        if field not in record:
+            continue
+        compact[field] = _compact_value(record[field])
+        if len(compact) >= 16:
+            break
+    return compact
+
+
+def _compact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        normalized = " ".join(value.split())
+        if len(normalized) > 160:
+            return normalized[:120].rstrip() + f" ... <{len(normalized) - 120} chars omitted>"
+        return normalized
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) > 160:
+        return text[:120].rstrip() + f" ... <{len(text) - 120} chars omitted>"
+    return value
+
+
+def _extract_text_view(
+    text: str,
+    *,
+    context: str,
+    target_chars: int,
+    title: str,
+) -> str | None:
+    lines = text.splitlines()
+    if len(lines) <= 1:
+        if len(text) <= target_chars:
+            return None
+        return f"# {title}\n{text[:target_chars].rstrip()}\n# ... omitted {len(text) - target_chars} chars ...\n"
+    avg_line = max(1, len(text) // max(1, len(lines)))
+    max_lines = max(16, min(240, target_chars // avg_line))
+    keep = _select_line_indexes(lines, context=context, max_lines=max_lines)
+    compressed = _format_selected_lines(title, lines, keep)
+    if len(compressed) > target_chars:
+        tighter = max(8, int(len(keep) * target_chars / max(1, len(compressed))))
+        keep = _select_line_indexes(lines, context=context, max_lines=tighter)
+        compressed = _format_selected_lines(title, lines, keep)
+    return compressed if len(compressed) < len(text) else None
 
 def _json_text(value: Any) -> str:
     try:

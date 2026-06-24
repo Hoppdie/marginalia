@@ -25,7 +25,7 @@ import logging
 import os
 from typing import Any
 
-from marginalia.agent.headroom_adapter import maybe_compress_archive_peeks
+from marginalia.agent.compression_adapter import maybe_compress_archive_peeks
 from marginalia.llm import (
     ChatRequest, cacheable_prompt_messages, get_chat_client,
 )
@@ -523,8 +523,8 @@ def _description_peek(peek: dict[str, Any]) -> dict[str, Any]:
         "kind": peek["kind"],
         "preview": str(peek.get("preview") or "")[:400],
     }
-    if isinstance(peek.get("headroom_compression"), dict):
-        out["headroom_compression"] = peek["headroom_compression"]
+    if isinstance(peek.get("compression"), dict):
+        out["compression"] = peek["compression"]
     return out
 
 

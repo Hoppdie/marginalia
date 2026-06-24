@@ -13,8 +13,8 @@ from marginalia.pipelines import resolve_pipeline
 
 @dataclass(slots=True)
 class FakeCompressed:
-    text: str = "compact headroom view"
-    strategy: str = "headroom.fake"
+    text: str = "compact compression view"
+    strategy: str = "marginalia.fake"
     lossy: bool = True
 
     def metadata(self) -> dict[str, Any]:
@@ -41,7 +41,7 @@ def _cfg(**overrides: Any) -> CompressionSettings:
 
 def test_disabled_or_small_reads_are_not_compressed(monkeypatch) -> None:
     def fail_if_called(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("Headroom should not be called")
+        raise AssertionError("compression should not be called")
 
     monkeypatch.setattr(mod, "maybe_compress_read_view", fail_if_called)
 
@@ -64,7 +64,7 @@ def test_disabled_or_small_reads_are_not_compressed(monkeypatch) -> None:
 
 def test_precision_reads_are_not_compressed(monkeypatch) -> None:
     def fail_if_called(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("Headroom should not be called")
+        raise AssertionError("compression should not be called")
 
     monkeypatch.setattr(mod, "maybe_compress_read_view", fail_if_called)
     text = "needle\n" + ("large context\n" * 20)
@@ -85,7 +85,7 @@ def test_precision_reads_are_not_compressed(monkeypatch) -> None:
 
 def test_explicit_uncompressed_read_is_not_recompressed(monkeypatch) -> None:
     def fail_if_called(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("Headroom should not be called")
+        raise AssertionError("compression should not be called")
 
     monkeypatch.setattr(mod, "maybe_compress_read_view", fail_if_called)
     text = "x" * 100
@@ -101,7 +101,7 @@ def test_explicit_uncompressed_read_is_not_recompressed(monkeypatch) -> None:
     assert result.text == text
 
 
-def test_successful_headroom_compression_returns_reopen_args(monkeypatch) -> None:
+def test_successful_compression_returns_reopen_args(monkeypatch) -> None:
     calls: list[dict[str, Any]] = []
 
     def fake_compress(
@@ -143,8 +143,8 @@ def test_successful_headroom_compression_returns_reopen_args(monkeypatch) -> Non
     )
 
     assert result.compressed is True
-    assert result.text == "compact headroom view"
-    assert result.strategy == "headroom.fake"
+    assert result.text == "compact compression view"
+    assert result.strategy == "marginalia.fake"
     assert calls == [
         {
             "body": text,
@@ -208,7 +208,7 @@ def test_granular_reopen_args_include_line_page_and_member_anchors(monkeypatch) 
 
 def test_code_reads_are_not_compressed_by_default(monkeypatch) -> None:
     def fail_if_called(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("Headroom should not be called for default code reads")
+        raise AssertionError("compression should not be called for default code reads")
 
     monkeypatch.setattr(mod, "maybe_compress_read_view", fail_if_called)
     text = "def fn():\n    return 1\n" * 20
@@ -273,7 +273,7 @@ def test_explicit_code_reads_can_be_compressed(monkeypatch) -> None:
     }]
 
 
-def test_weak_headroom_compression_is_rejected(monkeypatch) -> None:
+def test_weak_compression_is_rejected(monkeypatch) -> None:
     monkeypatch.setattr(
         mod,
         "maybe_compress_read_view",
@@ -292,7 +292,7 @@ def test_weak_headroom_compression_is_rejected(monkeypatch) -> None:
     assert result.text == text
 
 
-def test_headroom_none_fails_open(monkeypatch) -> None:
+def test_compressor_none_fails_open(monkeypatch) -> None:
     monkeypatch.setattr(mod, "maybe_compress_read_view", lambda *args, **kwargs: None)
     text = "x" * 100
 

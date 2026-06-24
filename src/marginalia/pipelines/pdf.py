@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from marginalia.agent.headroom_adapter import (
+from marginalia.agent.compression_adapter import (
     maybe_compress_ingest_aggregate_view,
     maybe_compress_ingest_view,
 )
@@ -337,13 +337,13 @@ class PdfPipeline(Pipeline):
                 if ocr_used else PDF_TEXT_MAX_INDEX_PAGES
             ),
         )
-        body_for_index, headroom_meta = maybe_compress_ingest_view(
+        body_for_index, compression_meta = maybe_compress_ingest_view(
             body_text,
             kind="pdf",
             context=ctx.display_name or "",
         )
-        if headroom_meta is not None:
-            coverage["headroom_compression"] = headroom_meta
+        if compression_meta is not None:
+            coverage["compression"] = compression_meta
 
         user_payload = {
             "folder_path": ctx.folder_path,
@@ -539,7 +539,7 @@ class PdfPipeline(Pipeline):
             context=ctx.display_name or "",
         )
         if aggregate_meta is not None:
-            coverage["headroom_aggregate_compression"] = aggregate_meta
+            coverage["aggregate_compression"] = aggregate_meta
         resp = await client.complete(ChatRequest(
             system=PDF_AGGREGATE_SYSTEM,
             messages=cacheable_prompt_messages(

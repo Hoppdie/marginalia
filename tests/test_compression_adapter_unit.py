@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from marginalia.agent import headroom_adapter as mod
+from marginalia.agent import compression_adapter as mod
 
 
 def _settings(**overrides):
@@ -35,9 +35,9 @@ def test_query_tool_compression_returns_model_only_envelope(monkeypatch) -> None
     monkeypatch.setattr(
         mod,
         "_compress_query_payload",
-        lambda tool_name, payload, context: mod.HeadroomText(
+        lambda tool_name, payload, context: mod.CompressedText(
             text="a\n1\n2",
-            strategy="headroom.smart_crusher.csv-schema",
+            strategy="marginalia.smart_crusher.csv-schema",
             original_chars=200,
             compressed_chars=5,
             extra={"lossy": False},
@@ -57,11 +57,11 @@ def test_query_tool_compression_returns_model_only_envelope(monkeypatch) -> None
     )
 
     assert result is not None
-    assert result["headroom_compressed"] is True
+    assert result["compressed_for_model"] is True
     assert result["columns"] == ["a", "b"]
     assert result["row_count"] == 50
     assert result["compressed_text"] == "a\n1\n2"
-    assert result["compression"]["strategy"] == "headroom.smart_crusher.csv-schema"
+    assert result["compression"]["strategy"] == "marginalia.smart_crusher.csv-schema"
 
 
 def test_ingest_compression_records_metadata(monkeypatch) -> None:
@@ -69,9 +69,9 @@ def test_ingest_compression_records_metadata(monkeypatch) -> None:
     monkeypatch.setattr(
         mod,
         "_compress_ingest_text",
-        lambda body, kind, context: mod.HeadroomText(
+        lambda body, kind, context: mod.CompressedText(
             text="ERROR compact",
-            strategy="headroom.log",
+            strategy="marginalia.log",
             original_chars=500,
             compressed_chars=13,
             extra={"lossy": True},
@@ -86,11 +86,11 @@ def test_ingest_compression_records_metadata(monkeypatch) -> None:
 
     assert text == "ERROR compact"
     assert meta is not None
-    assert meta["strategy"] == "headroom.log"
+    assert meta["strategy"] == "marginalia.log"
     assert meta["lossy"] is True
 
 
-def test_non_query_tool_is_not_headroom_compressed(monkeypatch) -> None:
+def test_non_query_tool_is_not_compressed_for_model(monkeypatch) -> None:
     monkeypatch.setattr(mod, "get_settings", lambda: _settings())
 
     result = mod.maybe_compress_tool_result_for_model(
@@ -126,9 +126,9 @@ def test_read_code_route_requires_explicit_allow_code(monkeypatch) -> None:
     monkeypatch.setattr(
         mod,
         "_compress_code_text",
-        lambda body, context, target_ratio: mod.HeadroomText(
+        lambda body, context, target_ratio: mod.CompressedText(
             text="compact code",
-            strategy="headroom.code_aware",
+            strategy="marginalia.code_aware",
             original_chars=len(body),
             compressed_chars=12,
             extra={"lossy": True},
@@ -156,7 +156,7 @@ def test_read_code_route_requires_explicit_allow_code(monkeypatch) -> None:
 
     assert skipped is None
     assert compressed is not None
-    assert compressed.strategy == "headroom.code_aware"
+    assert compressed.strategy == "marginalia.code_aware"
     assert compressed.extra["route"] == "code"
 
 
@@ -171,9 +171,9 @@ def test_table_read_route_builds_records_for_smartcrusher(monkeypatch) -> None:
             "source_format": source_format,
             "lossy": lossy,
         })
-        return mod.HeadroomText(
+        return mod.CompressedText(
             text="compact table",
-            strategy="headroom.smart_crusher.table",
+            strategy="marginalia.smart_crusher.table",
             original_chars=original_chars or 0,
             compressed_chars=13,
             extra={"lossy": lossy},
@@ -204,9 +204,9 @@ def test_jsonl_read_route_uses_records(monkeypatch) -> None:
 
     def fake_records(records, *, context, original_chars=None, source_format="records", lossy=False):
         calls.append({"records": records, "source_format": source_format})
-        return mod.HeadroomText(
+        return mod.CompressedText(
             text="compact jsonl",
-            strategy="headroom.smart_crusher.json",
+            strategy="marginalia.smart_crusher.json",
             original_chars=original_chars or 0,
             compressed_chars=13,
             extra={"lossy": lossy},
@@ -231,9 +231,9 @@ def test_ingest_table_routes_to_table_compressor(monkeypatch) -> None:
     monkeypatch.setattr(
         mod,
         "_compress_table_text",
-        lambda body, context: mod.HeadroomText(
+        lambda body, context: mod.CompressedText(
             text="compact table",
-            strategy="headroom.smart_crusher.table",
+            strategy="marginalia.smart_crusher.table",
             original_chars=len(body),
             compressed_chars=13,
             extra={"lossy": True},
@@ -248,7 +248,7 @@ def test_ingest_table_routes_to_table_compressor(monkeypatch) -> None:
 
     assert compressed is not None
     assert compressed.text == "compact table"
-    assert compressed.strategy == "headroom.smart_crusher.table"
+    assert compressed.strategy == "marginalia.smart_crusher.table"
 
 
 def test_ingest_jsonl_routes_to_structured_compressor(monkeypatch) -> None:
@@ -256,9 +256,9 @@ def test_ingest_jsonl_routes_to_structured_compressor(monkeypatch) -> None:
 
     def fake_records(records, *, context, original_chars=None, source_format="records", lossy=False):
         calls.append({"records": records, "source_format": source_format})
-        return mod.HeadroomText(
+        return mod.CompressedText(
             text="compact jsonl",
-            strategy="headroom.smart_crusher.json",
+            strategy="marginalia.smart_crusher.json",
             original_chars=original_chars or 0,
             compressed_chars=13,
             extra={"lossy": lossy},
@@ -307,9 +307,9 @@ def test_archive_peeks_are_compressed_with_reopen_metadata(monkeypatch) -> None:
     monkeypatch.setattr(
         mod,
         "_compress_read_text",
-        lambda body, **kwargs: mod.HeadroomText(
+        lambda body, **kwargs: mod.CompressedText(
             text="compact peek",
-            strategy="headroom.log",
+            strategy="marginalia.log",
             original_chars=len(body),
             compressed_chars=12,
             extra={"lossy": True, "route": "log"},
@@ -321,8 +321,8 @@ def test_archive_peeks_are_compressed_with_reopen_metadata(monkeypatch) -> None:
     ], context="bundle.zip")
 
     assert out[0]["preview"] == "compact peek"
-    assert out[0]["headroom_compression"]["route"] == "log"
-    assert out[0]["headroom_compression"]["reopen"] == {
+    assert out[0]["compression"]["route"] == "log"
+    assert out[0]["compression"]["reopen"] == {
         "member_path": "logs/access.log",
         "compress": False,
     }
@@ -333,9 +333,9 @@ def test_ingest_aggregate_view_uses_text_compressor(monkeypatch) -> None:
     monkeypatch.setattr(
         mod,
         "_compress_plain_text",
-        lambda body, context, target_ratio: mod.HeadroomText(
+        lambda body, context, target_ratio: mod.CompressedText(
             text="compact aggregate",
-            strategy="headroom.kompress",
+            strategy="marginalia.text_extract",
             original_chars=len(body),
             compressed_chars=17,
             extra={"lossy": True},

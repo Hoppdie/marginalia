@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     # get the same stuck-turn recovery behavior.
     agent_turn_timeout_seconds: float = 1800.0
     # Unified compression switch. Only COMPRESSION_ENABLED controls all
-    # Headroom-backed ingest, query, and read_files compression paths.
+    # built-in ingest, query, and read_files compression paths.
     compression_enabled: bool = Field(True, validation_alias="COMPRESSION_ENABLED")
     compression_min_chars: int = Field(12_000, validation_alias="COMPRESSION_MIN_CHARS")
     compression_target_chars: int = Field(8_000, validation_alias="COMPRESSION_TARGET_CHARS")

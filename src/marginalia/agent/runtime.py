@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, AsyncIterator, Literal
 
-from marginalia.agent.headroom_adapter import maybe_compress_tool_result_for_model
+from marginalia.agent.compression_adapter import maybe_compress_tool_result_for_model
 from marginalia.agent.stable_context import (
     build_resumed_messages,
     build_stable_snapshot,
