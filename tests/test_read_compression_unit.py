@@ -111,6 +111,10 @@ def test_successful_headroom_compression_returns_reopen_args(monkeypatch) -> Non
         kind: str,
         context: str,
         target_ratio: float,
+        source_name: str,
+        source_ext: str,
+        member_path: str,
+        allow_code: bool,
     ) -> FakeCompressed:
         calls.append({
             "body": body,
@@ -118,6 +122,10 @@ def test_successful_headroom_compression_returns_reopen_args(monkeypatch) -> Non
             "kind": kind,
             "context": context,
             "target_ratio": target_ratio,
+            "source_name": source_name,
+            "source_ext": source_ext,
+            "member_path": member_path,
+            "allow_code": allow_code,
         })
         return FakeCompressed()
 
@@ -144,6 +152,10 @@ def test_successful_headroom_compression_returns_reopen_args(monkeypatch) -> Non
             "kind": "text",
             "context": "target signal",
             "target_ratio": 0.25,
+            "source_name": "",
+            "source_ext": "",
+            "member_path": "chapter.md",
+            "allow_code": False,
         }
     ]
     assert result.omitted == [
@@ -163,6 +175,102 @@ def test_successful_headroom_compression_returns_reopen_args(monkeypatch) -> Non
     assert meta["compressed"] is True
     assert meta["lossy"] is True
     assert meta["quote_safe"]
+
+
+def test_granular_reopen_args_include_line_page_and_member_anchors(monkeypatch) -> None:
+    monkeypatch.setattr(mod, "maybe_compress_read_view", lambda *args, **kwargs: FakeCompressed())
+    text = "0123456789" * 100
+
+    result = compress_read_text(
+        text,
+        entry_id="entry-text",
+        args={"member_path": "notes.md", "offset": 200, "max_chars": 12000},
+        extras={"line_start": 14, "line_end": 29},
+        pipeline="text",
+        kind="text",
+        settings=_cfg(target_chars=250),
+    )
+
+    assert result.compressed is True
+    assert result.omitted[0]["kind"] == "original_read"
+    assert result.omitted[1] == {
+        "kind": "line_window",
+        "entry_id": "entry-text",
+        "read_files_args": {
+            "member_path": "notes.md",
+            "line_start": 14,
+            "line_end": 29,
+            "compress": False,
+        },
+        "original_chars": len(text),
+    }
+
+
+def test_code_reads_are_not_compressed_by_default(monkeypatch) -> None:
+    def fail_if_called(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("Headroom should not be called for default code reads")
+
+    monkeypatch.setattr(mod, "maybe_compress_read_view", fail_if_called)
+    text = "def fn():\n    return 1\n" * 20
+
+    result = compress_read_text(
+        text,
+        entry_id="entry-code",
+        args={"max_chars": 12000},
+        pipeline="text",
+        kind="text",
+        source_name="worker.py",
+        settings=_cfg(),
+    )
+
+    assert result.compressed is False
+    assert result.text == text
+
+
+def test_explicit_code_reads_can_be_compressed(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_compress(
+        body: str,
+        *,
+        pipeline: str,
+        kind: str,
+        context: str,
+        target_ratio: float,
+        source_name: str,
+        source_ext: str,
+        member_path: str,
+        allow_code: bool,
+    ) -> FakeCompressed:
+        calls.append({
+            "source_name": source_name,
+            "source_ext": source_ext,
+            "member_path": member_path,
+            "allow_code": allow_code,
+        })
+        return FakeCompressed(text="compact code view")
+
+    monkeypatch.setattr(mod, "maybe_compress_read_view", fake_compress)
+    text = "def fn():\n    return 1\n" * 20
+
+    result = compress_read_text(
+        text,
+        entry_id="entry-code",
+        args={"compress": True, "max_chars": 12000},
+        pipeline="text",
+        kind="text",
+        source_name="worker.py",
+        settings=_cfg(),
+    )
+
+    assert result.compressed is True
+    assert result.text == "compact code view"
+    assert calls == [{
+        "source_name": "worker.py",
+        "source_ext": "",
+        "member_path": "",
+        "allow_code": True,
+    }]
 
 
 def test_weak_headroom_compression_is_rejected(monkeypatch) -> None:

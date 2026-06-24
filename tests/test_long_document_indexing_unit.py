@@ -202,6 +202,21 @@ async def test_pdf_long_ingest_chunks_then_aggregates(
 
     fake = FakeClient()
     monkeypatch.setattr(pdf_mod, "get_chat_client", lambda profile="ingest": fake)
+    aggregate_calls: list[str] = []
+
+    def fake_compress_aggregate(body: str, *, kind: str, context: str):
+        aggregate_calls.append(kind)
+        return "compressed aggregate prompt", {
+            "strategy": "headroom.text_crusher",
+            "aggregate": True,
+            "kind": kind,
+        }
+
+    monkeypatch.setattr(
+        pdf_mod,
+        "maybe_compress_ingest_aggregate_view",
+        fake_compress_aggregate,
+    )
 
     result = await PdfPipeline().run(
         ctx=_ctx(),
@@ -213,6 +228,8 @@ async def test_pdf_long_ingest_chunks_then_aggregates(
     assert coverage["total_pages"] == 65
     assert coverage["indexed_pages"] == 65
     assert coverage["indexed_partial"] is False
+    assert coverage["headroom_aggregate_compression"]["kind"] == "pdf_aggregate"
+    assert aggregate_calls == ["pdf_aggregate"]
     assert len(result.description["sections"]) == 2
     assert result.description["sections"][1]["anchor"]["value"] == "41-65"
     assert "topic 65" in (result.extra or "")
@@ -260,6 +277,21 @@ async def test_text_long_ingest_chunks_then_aggregates(
 
     fake = FakeClient()
     monkeypatch.setattr(text_mod, "get_chat_client", lambda profile="ingest": fake)
+    aggregate_calls: list[str] = []
+
+    def fake_compress_aggregate(body: str, *, kind: str, context: str):
+        aggregate_calls.append(kind)
+        return "compressed aggregate prompt", {
+            "strategy": "headroom.text_crusher",
+            "aggregate": True,
+            "kind": kind,
+        }
+
+    monkeypatch.setattr(
+        text_mod,
+        "maybe_compress_ingest_aggregate_view",
+        fake_compress_aggregate,
+    )
 
     ctx = _ctx(size=len(body))
     ctx.mime_type = "text/markdown"
@@ -270,6 +302,8 @@ async def test_text_long_ingest_chunks_then_aggregates(
     coverage = result.description["coverage"]
     assert coverage["chunked"] is True
     assert coverage["indexed_partial"] is False
+    assert coverage["headroom_aggregate_compression"]["kind"] == "text_aggregate"
+    assert aggregate_calls == ["text_aggregate"]
     assert len(result.description["sections"]) >= 2
     assert result.description["sections"][0]["anchor"]["unit"] == "lines"
     assert "keyword-8999" in (result.extra or "")

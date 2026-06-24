@@ -22,6 +22,10 @@ import re
 from dataclasses import replace
 from typing import Any
 
+from marginalia.agent.headroom_adapter import (
+    maybe_compress_ingest_aggregate_view,
+    maybe_compress_ingest_view,
+)
 from marginalia.llm import (
     ChatRequest,
     cacheable_prompt_messages,
@@ -229,6 +233,11 @@ class TextPipeline(Pipeline):
             "indexed_bytes": indexed_bytes,
             "total_bytes": total_bytes,
         }
+        body_for_index, headroom_meta = maybe_compress_ingest_view(
+            body,
+            kind="text",
+            context=ctx.display_name or "",
+        )
         stable_prefix = (
             "Index the document text below. Hints are advisory; the provided "
             "content takes precedence. If indexed_bytes is less than "
@@ -243,14 +252,14 @@ class TextPipeline(Pipeline):
         )
         file_content = (
             f"<context>\n{json.dumps(user_payload, ensure_ascii=False)}\n</context>\n\n"
-            f"<document>\n{body}\n</document>"
+            f"<document>\n{body_for_index}\n</document>"
         )
 
         client = get_chat_client("ingest")
         request = ChatRequest(
             system=TEXT_PIPELINE_SYSTEM,
             messages=cacheable_prompt_messages(stable_prefix, file_content),
-            max_tokens=_index_output_tokens(len(body)),
+            max_tokens=_index_output_tokens(len(body_for_index)),
             temperature=0.2,
             cache_breakpoints=[0],
         )
@@ -290,6 +299,8 @@ class TextPipeline(Pipeline):
             chunk_count=1,
             read_truncated=read_truncated,
         )
+        if headroom_meta is not None:
+            coverage["headroom_compression"] = headroom_meta
         return self._result_from_fields(
             fields=fields,
             sections=renumber_sections(sections),
@@ -417,6 +428,13 @@ class TextPipeline(Pipeline):
             f"<context>\n{json.dumps(aggregate_payload, ensure_ascii=False)}\n</context>\n\n"
             f"<section_map>\n{render_sections_digest(sections, max_chars=TEXT_SECTION_DIGEST_BYTES)}\n</section_map>"
         )
+        aggregate_content, aggregate_meta = maybe_compress_ingest_aggregate_view(
+            aggregate_content,
+            kind="text_aggregate",
+            context=ctx.display_name or "",
+        )
+        if aggregate_meta is not None:
+            coverage["headroom_aggregate_compression"] = aggregate_meta
         request = ChatRequest(
             system=TEXT_AGGREGATE_SYSTEM,
             messages=cacheable_prompt_messages(

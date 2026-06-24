@@ -25,6 +25,7 @@ import logging
 import os
 from typing import Any
 
+from marginalia.agent.headroom_adapter import maybe_compress_archive_peeks
 from marginalia.llm import (
     ChatRequest, cacheable_prompt_messages, get_chat_client,
 )
@@ -168,6 +169,7 @@ class ArchivePipeline(Pipeline):
             peeks: list[dict[str, Any]] = []
             for member in picks:
                 peeks.append(await _peek_member(session, member))
+            peeks = maybe_compress_archive_peeks(peeks, context=filename)
 
             # Git-repo detection + metadata. Surface in description so
             # the agent can see branch / recent commits / authors.
@@ -245,10 +247,7 @@ class ArchivePipeline(Pipeline):
             "indexed_files": indexed_files,
             "key_files": key_files,
             "git_metadata": git_meta_dict,
-            "member_peeks": [
-                {"path": p["path"], "kind": p["kind"], "preview": p["preview"][:400]}
-                for p in peeks
-            ],
+            "member_peeks": [_description_peek(p) for p in peeks],
         }
         description_text = tagged.get("description", "").strip()
         if description_text:
@@ -516,6 +515,17 @@ async def _peek_member(session, member) -> dict[str, Any]:
         "kind": inner.name,
         "preview": text[:PEEK_PER_MEMBER_CHARS] or "[empty]",
     }
+
+
+def _description_peek(peek: dict[str, Any]) -> dict[str, Any]:
+    out = {
+        "path": peek["path"],
+        "kind": peek["kind"],
+        "preview": str(peek.get("preview") or "")[:400],
+    }
+    if isinstance(peek.get("headroom_compression"), dict):
+        out["headroom_compression"] = peek["headroom_compression"]
+    return out
 
 
 def _directory_tree(members) -> str:

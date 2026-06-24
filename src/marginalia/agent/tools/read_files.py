@@ -324,6 +324,8 @@ async def read_files(
                     pipeline=pipeline.name,
                     kind=file_row.kind,
                     query=ctx.user_message,
+                    source_name=str(read_args.get("member_path") or entry.display_name or ""),
+                    source_ext=str(file_row.original_ext or ""),
                     settings=compression_settings,
                 )
                 entry_dict["text"] = compression.text

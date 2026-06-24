@@ -26,6 +26,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from marginalia.agent.headroom_adapter import (
+    maybe_compress_ingest_aggregate_view,
+    maybe_compress_ingest_view,
+)
 from marginalia.config import has_vision_profile
 from marginalia.llm import (
     ChatMessage,
@@ -333,6 +337,14 @@ class PdfPipeline(Pipeline):
                 if ocr_used else PDF_TEXT_MAX_INDEX_PAGES
             ),
         )
+        body_for_index, headroom_meta = maybe_compress_ingest_view(
+            body_text,
+            kind="pdf",
+            context=ctx.display_name or "",
+        )
+        if headroom_meta is not None:
+            coverage["headroom_compression"] = headroom_meta
+
         user_payload = {
             "folder_path": ctx.folder_path,
             "sibling_names": ctx.sibling_names,
@@ -355,11 +367,11 @@ class PdfPipeline(Pipeline):
         )
         file_content = (
             f"<context>\n{json.dumps(user_payload, ensure_ascii=False)}\n</context>\n\n"
-            f"<document>\n{body_text}\n</document>"
+            f"<document>\n{body_for_index}\n</document>"
         )
 
         client = get_chat_client("ingest")
-        max_out = min(8192, max(2048, len(body_text) // 8))
+        max_out = min(8192, max(2048, len(body_for_index) // 8))
         resp = await client.complete(ChatRequest(
             system=PDF_PIPELINE_SYSTEM,
             messages=cacheable_prompt_messages(stable_prefix, file_content),
@@ -521,6 +533,13 @@ class PdfPipeline(Pipeline):
             f"<context>\n{json.dumps(aggregate_payload, ensure_ascii=False)}\n</context>\n\n"
             f"<section_map>\n{digest}\n</section_map>"
         )
+        aggregate_content, aggregate_meta = maybe_compress_ingest_aggregate_view(
+            aggregate_content,
+            kind="pdf_aggregate",
+            context=ctx.display_name or "",
+        )
+        if aggregate_meta is not None:
+            coverage["headroom_aggregate_compression"] = aggregate_meta
         resp = await client.complete(ChatRequest(
             system=PDF_AGGREGATE_SYSTEM,
             messages=cacheable_prompt_messages(
