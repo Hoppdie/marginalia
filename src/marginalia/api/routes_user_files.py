@@ -19,10 +19,13 @@ from marginalia.services.relation_vetting import schedule_direct_relation_vettin
 from marginalia.services.user_files import (
     DownloadHandle,
     EntryNotFoundError,
+    EntryPreviewError,
+    EntryPreviewUnsupportedError,
     FolderNotFoundError,
     collect_folder_entries,
     get_entry_path,
     get_user_metadata,
+    open_extracted_text_preview,
     open_for_download,
     search_entries,
 )
@@ -130,6 +133,37 @@ async def file_entry_path(
         return await get_entry_path(session, entry_id=entry_id)
     except EntryNotFoundError:
         raise HTTPException(status_code=404, detail="entry not found")
+
+
+@router.get("/file-entries/{entry_id}/preview-text")
+async def file_entry_preview_text(
+    entry_id: str,
+    max_chars: int = Query(default=2_000_000, ge=1, le=5_000_000),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        preview = await open_extracted_text_preview(
+            session,
+            entry_id=entry_id,
+            max_chars=max_chars,
+        )
+    except EntryNotFoundError:
+        raise HTTPException(status_code=404, detail="entry not found")
+    except EntryPreviewUnsupportedError:
+        raise HTTPException(status_code=415, detail="text preview not supported")
+    except EntryPreviewError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "entry_id": preview.entry_id,
+        "file_id": preview.file_id,
+        "display_name": preview.display_name,
+        "pipeline": preview.pipeline,
+        "text": preview.text,
+        "total_chars": preview.total_chars,
+        "returned_chars": preview.returned_chars,
+        "truncated": preview.truncated,
+    }
 
 
 @router.get("/file-entries/{entry_id}/content")

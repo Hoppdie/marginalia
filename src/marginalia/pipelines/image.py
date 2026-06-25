@@ -1,6 +1,8 @@
 """Image pipeline (DESIGN.md §11.3).
 
-Handles raster images: image/png / image/jpeg / image/gif / image/webp.
+Handles raster images through one image pipeline. Browser-native formats are
+viewed directly in the frontend; TIFF/HEIC are decoded on demand there.
+Backend vision indexing is best-effort and never writes preview files.
 Uses the `vision` LLM profile (a multimodal model) and feeds the image
 bytes as a base64 ImageBlock — the abstraction layer translates to each
 provider's native shape (OpenAI: data: URL; Anthropic: base64 source).
@@ -61,25 +63,25 @@ def downscale_for_vlm(
     body: bytes,
     *,
     max_long_edge: int = VLM_MAX_LONG_EDGE,
-) -> tuple[bytes, str]:
+) -> tuple[bytes, str] | None:
     """Return (jpeg_bytes, 'image/jpeg') after down-scaling to fit
     `max_long_edge`. Already-small images are re-encoded as JPEG too —
     this gives a single, predictable shape going to every VLM provider
     (PNG → JPEG saves ~3-5x on screenshots) at the cost of one Pillow
     round-trip when the image is already within bounds.
 
-    On any Pillow failure (corrupt input, exotic format) returns the
-    original bytes + image/png as a best-effort fallback.
+    On any Pillow failure (corrupt input, exotic format) returns None;
+    callers then keep the file as an image with metadata-only indexing.
     """
     try:
         from PIL import Image  # type: ignore
     except ImportError:
-        return body, "image/png"
+        return None
     try:
         img = Image.open(io.BytesIO(body))
         img.load()
     except Exception:  # noqa: BLE001 — Pillow surfaces many error types
-        return body, "image/png"
+        return None
 
     # Drop alpha to keep JPEG happy.
     if img.mode in ("RGBA", "LA", "P"):
@@ -132,8 +134,14 @@ IMAGE_PIPELINE_SCHEMA: dict[str, Any] = {}
 
 
 @register_pipeline(
-    mimes=("image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"),
-    exts=(".png", ".jpg", ".jpeg", ".gif", ".webp"),
+    mimes=(
+        "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp",
+        "image/bmp", "image/tiff", "image/heic", "image/heif", "image/avif",
+    ),
+    exts=(
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+        ".tif", ".tiff", ".heic", ".heif", ".avif",
+    ),
 )
 class ImagePipeline(Pipeline):
     name = "image"
@@ -144,17 +152,27 @@ class ImagePipeline(Pipeline):
         ctx: PipelineContext,
         storage: StorageBackend,
     ) -> PipelineResult:
-        if not has_vision_profile():
-            # Image indexing fundamentally needs a VLM. Raise a clean
-            # message so the file is marked ingest_status='failed' with
-            # a reason the user can act on.
-            raise RuntimeError(
-                "image pipeline requires the `vision` LLM profile; "
-                "set LLM_VISION_API_KEY (or LLM_DEFAULT_API_KEY for a VLM "
-                "provider) and re-ingest."
-            )
         body = await self._read_bytes(storage, ctx.storage_key)
-        scaled, media_type = downscale_for_vlm(body)
+        if not has_vision_profile():
+            return _metadata_only_image_result(
+                ctx,
+                reason="vision_profile_missing",
+                detail=(
+                    "Image preview is available from the original file, but "
+                    "vision indexing did not run because no vision profile is configured."
+                ),
+            )
+        prepared = downscale_for_vlm(body)
+        if prepared is None:
+            return _metadata_only_image_result(
+                ctx,
+                reason="vlm_decode_unsupported",
+                detail=(
+                    "Image preview may still be available in the frontend, but "
+                    "the backend could not decode this image for vision indexing."
+                ),
+            )
+        scaled, media_type = prepared
         b64 = base64.b64encode(scaled).decode("ascii")
 
         stable_prefix = (
@@ -169,20 +187,28 @@ class ImagePipeline(Pipeline):
 
         client = get_chat_client("vision")
         extra_body = _disable_thinking_for_vlm(client)
-        resp = await client.complete(ChatRequest(
-            system=IMAGE_PIPELINE_SYSTEM,
-            messages=cacheable_prompt_messages(
-                stable_prefix,
-                [
-                    TextBlock(text=file_context),
-                    ImageBlock(media_type=media_type, data_b64=b64),
-                ],
-            ),
-            max_tokens=4096,
-            temperature=0.2,
-            cache_breakpoints=[0],
-            extra_body=extra_body,
-        ))
+        try:
+            resp = await client.complete(ChatRequest(
+                system=IMAGE_PIPELINE_SYSTEM,
+                messages=cacheable_prompt_messages(
+                    stable_prefix,
+                    [
+                        TextBlock(text=file_context),
+                        ImageBlock(media_type=media_type, data_b64=b64),
+                    ],
+                ),
+                max_tokens=4096,
+                temperature=0.2,
+                cache_breakpoints=[0],
+                extra_body=extra_body,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("image vision indexing failed for %s: %s", ctx.display_name, exc)
+            return _metadata_only_image_result(
+                ctx,
+                reason="vision_index_failed",
+                detail=f"Image preview is available, but vision indexing failed: {exc}",
+            )
 
         tagged = parse_tagged(resp.text or "")
         summary = tagged.get("summary", "").strip()
@@ -191,7 +217,11 @@ class ImagePipeline(Pipeline):
                 "image pipeline: no <summary> in response. text=%r",
                 (resp.text or "")[:300],
             )
-            raise ValueError("image pipeline produced empty summary")
+            return _metadata_only_image_result(
+                ctx,
+                reason="vision_index_empty",
+                detail="Image preview is available, but vision indexing returned no summary.",
+            )
 
         description_text = tagged.get("description", "").strip()
         return PipelineResult(
@@ -283,7 +313,13 @@ class ImagePipeline(Pipeline):
         except Exception as exc:  # noqa: BLE001
             return SegmentResult(error=f"image read failed: {exc}",
                                  extras={"kind": "image"})
-        scaled, media_type = downscale_for_vlm(body)
+        prepared = downscale_for_vlm(body)
+        if prepared is None:
+            return SegmentResult(
+                error="image format could not be decoded for VLM",
+                extras={"kind": "image"},
+            )
+        scaled, media_type = prepared
         b64 = base64.b64encode(scaled).decode("ascii")
         client = get_chat_client("vision")
         try:
@@ -335,7 +371,18 @@ class ImagePipeline(Pipeline):
         which substitutes a structural placeholder for image members so
         archives don't blow up VLM cost.
         """
-        scaled, media_type = downscale_for_vlm(body)
+        if not has_vision_profile():
+            return SegmentResult(
+                text=f"[image: {filename or 'unknown'}, ~{max(1, len(body) // 1024)} KB]",
+                extras={"kind": "image", "filename": filename, "bytes": len(body)},
+            )
+        prepared = downscale_for_vlm(body)
+        if prepared is None:
+            return SegmentResult(
+                text=f"[image: {filename or 'unknown'}, ~{max(1, len(body) // 1024)} KB]",
+                extras={"kind": "image", "filename": filename, "bytes": len(body)},
+            )
+        scaled, media_type = prepared
         b64 = base64.b64encode(scaled).decode("ascii")
         client = get_chat_client("vision")
         prompt = (
@@ -373,6 +420,35 @@ class ImagePipeline(Pipeline):
             },
         )
 
+
+
+def _metadata_only_image_result(
+    ctx: PipelineContext,
+    *,
+    reason: str,
+    detail: str,
+) -> PipelineResult:
+    name = ctx.display_name or f"image{ctx.original_ext or ''}"
+    description = {
+        "text": detail,
+        "coverage": {
+            "source_mode": "image_metadata_only",
+            "reason": reason,
+            "mime_type": ctx.mime_type,
+            "original_ext": ctx.original_ext,
+            "size_bytes": ctx.size_bytes,
+            "preview_mode": "frontend_original_or_client_decode",
+        },
+    }
+    return PipelineResult(
+        summary=f"Image file: {name}",
+        description=description,
+        kind="image",
+        extra=f"image_indexing: {reason}",
+        entry_extra=None,
+        entry_catalog_path=None,
+        entry_tags=[],
+    )
 
 def _render_image_description(file_row: Any) -> str:
     """Format image description into agent-readable text."""

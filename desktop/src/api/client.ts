@@ -22,6 +22,7 @@ import type {
   ApiErrorBody,
   EntryPath,
   FileMetadata,
+  FilePreviewText,
   Folder,
   FolderDetail,
   FolderListing,
@@ -226,6 +227,10 @@ export const fileEntries = {
   },
   contentUrl: (id: string) =>
     `${_base}/v1/file-entries/${encodeURIComponent(id)}/content`,
+  previewText: (id: string, maxChars = 2_000_000) =>
+    _request<FilePreviewText>(
+      `/v1/file-entries/${encodeURIComponent(id)}/preview-text?max_chars=${maxChars}`,
+    ),
   downloadUrl: (id: string) =>
     `${_base}/v1/file-entries/${encodeURIComponent(id)}/download`,
 };

@@ -62,7 +62,7 @@ def parse_citation_footnote_match(match: re.Match[str]) -> CitationFootnote:
     entry_id = _extract_entry_id(fields.get("entry_id"))
     if entry_id is None:
         entry_id = _extract_entry_id_from_body(body) or ""
-    page = _extract_page(fields.get("page"))
+    page = _extract_page(fields.get("page") or fields.get("slide"))
     reason = _clean_value(trailer_reason or fields.get("reason") or "")
     return CitationFootnote(
         marker=match.group(1),

@@ -951,6 +951,17 @@ def _pick_query_string(
     mime = (getattr(file, "mime_type", None) or "").lower()
     ext = (getattr(file, "original_ext", None) or "").lower().lstrip(".")
     kind = (getattr(file, "kind", None) or "").lower()
+    is_presentation = (
+        ext in {"pptx", "pptm"}
+        or "presentationml.presentation" in mime
+    )
+    if is_presentation:
+        first = first_page_number(page)
+        if first:
+            return f"?page={first}"
+        if quote:
+            return f"?q={urllib.parse.quote_plus(_unescape_quote(quote))}"
+        return ""
     is_text_searchable = (
         kind in _TEXT_SEARCHABLE_KINDS
         or ext in _TEXT_SEARCHABLE_EXTS

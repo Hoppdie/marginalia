@@ -21,6 +21,7 @@ ENTRY_LIFECYCLES: tuple[str, ...] = (
 
 FILE_KINDS: tuple[str, ...] = (
     "text", "table", "log", "image", "audio", "video", "code", "container",
+    "email", "ebook",
 )
 
 TAG_FACETS: tuple[str, ...] = (

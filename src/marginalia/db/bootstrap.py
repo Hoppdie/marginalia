@@ -628,6 +628,68 @@ def _relax_sessions_end_reason_check(bind) -> None:
         bind.execute(sa.text("PRAGMA legacy_alter_table = OFF"))
 
 
+def _relax_files_kind_check(bind) -> None:
+    """Extend `files.kind` CHECK for supplemental document kinds.
+
+    MarkItDown/email supplemental pipelines write `email` and `ebook` kinds.
+    Existing SQLite DBs need a table rebuild because CHECK constraints cannot
+    be altered in place. PostgreSQL can drop/recreate the named constraint.
+    """
+    from marginalia.db.models.enums import FILE_KINDS, _in_clause
+
+    inspector = sa.inspect(bind)
+    if "files" not in inspector.get_table_names():
+        return
+
+    if bind.dialect.name == "sqlite":
+        row = bind.execute(sa.text(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'"
+        )).fetchone()
+        if row is None:
+            return
+        live_sql = row[0] or ""
+        missing = [value for value in FILE_KINDS if f"'{value}'" not in live_sql]
+        if not missing:
+            return
+
+        bind.execute(sa.text("PRAGMA legacy_alter_table = ON"))
+        bind.execute(sa.text("PRAGMA foreign_keys = OFF"))
+        try:
+            cols = [column["name"] for column in inspector.get_columns("files")]
+            for idx in inspector.get_indexes("files"):
+                bind.execute(sa.text(f'DROP INDEX IF EXISTS "{idx["name"]}"'))
+            bind.execute(sa.text("ALTER TABLE files RENAME TO _files_old"))
+            Base.metadata.tables["files"].create(bind=bind)
+            col_list = ", ".join(f'"{column}"' for column in cols)
+            bind.execute(sa.text(
+                f"INSERT INTO files ({col_list}) "
+                f"SELECT {col_list} FROM _files_old"
+            ))
+            bind.execute(sa.text("DROP TABLE _files_old"))
+        finally:
+            bind.execute(sa.text("PRAGMA foreign_keys = ON"))
+            bind.execute(sa.text("PRAGMA legacy_alter_table = OFF"))
+        _ensure_entry_metadata_fts(bind)
+        _ensure_entry_metadata_fts_description(bind)
+        return
+
+    if bind.dialect.name == "postgresql":
+        row = bind.execute(sa.text(
+            "SELECT pg_get_constraintdef(c.oid) "
+            "FROM pg_constraint c "
+            "JOIN pg_class t ON t.oid = c.conrelid "
+            "WHERE t.relname = 'files' AND c.conname = 'ck_files_kind'"
+        )).fetchone()
+        live_def = row[0] if row is not None else ""
+        if all(f"'{value}'" in live_def for value in FILE_KINDS):
+            return
+        bind.execute(sa.text("ALTER TABLE files DROP CONSTRAINT IF EXISTS ck_files_kind"))
+        bind.execute(sa.text(
+            "ALTER TABLE files ADD CONSTRAINT ck_files_kind "
+            f"CHECK (kind IS NULL OR {_in_clause('kind', FILE_KINDS)})"
+        ))
+
+
 def _ensure_conversations_session_turn_unique(bind) -> None:
     """Replace the legacy non-unique `ix_conversations_session_turn` index
     with a unique constraint on (session_id, turn_index).
@@ -778,6 +840,7 @@ POST_BASELINE_SHIMS: tuple[tuple[str, Callable[[Any], None]], ...] = (
     ("0011_postgres_metadata_fts", _ensure_postgres_metadata_fts_indexes),
     ("0012_journal_invalidation", _ensure_journal_invalidation),
     ("0013_reconcile_dead_ingest_files", _reconcile_dead_ingest_files),
+    ("0014_files_kind_check", _relax_files_kind_check),
 )
 
 ALEMBIC_HEAD_REVISION = POST_BASELINE_SHIMS[-1][0]

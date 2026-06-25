@@ -38,8 +38,10 @@ __all__ = [
 # Importing the concrete pipelines registers them via decorators.
 from marginalia.pipelines import archive  # noqa: E402, F401
 from marginalia.pipelines import docx  # noqa: E402, F401
+from marginalia.pipelines import email as email_pipeline  # noqa: E402, F401
 from marginalia.pipelines import image  # noqa: E402, F401
 from marginalia.pipelines import log as log_pipeline  # noqa: E402, F401
+from marginalia.pipelines import markitdown  # noqa: E402, F401
 from marginalia.pipelines import pdf  # noqa: E402, F401
 from marginalia.pipelines import pptx  # noqa: E402, F401
 from marginalia.pipelines import spreadsheet  # noqa: E402, F401

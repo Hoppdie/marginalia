@@ -116,7 +116,7 @@ class File(Base, IdMixin, TimestampMixin):
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     original_ext: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # text | table | log | image | audio | video | code | container
+    # text | table | log | image | audio | video | code | container | email | ebook
     kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     description: Mapped[Any | None] = mapped_column(JSON, nullable=True)

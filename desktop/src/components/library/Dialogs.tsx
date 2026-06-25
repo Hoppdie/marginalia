@@ -730,11 +730,11 @@ const ARCHIVE_EXTENSIONS = new Set([
   ".7z", ".bz2", ".gz", ".rar", ".tar", ".tgz", ".xz", ".zip",
 ]);
 const DOCUMENT_EXTENSIONS = new Set([
-  ".bat", ".c", ".cpp", ".csv", ".docx", ".go", ".h", ".hpp",
+  ".bat", ".c", ".cpp", ".csv", ".docx", ".eml", ".epub", ".go", ".h", ".hpp",
   ".htm", ".html", ".java", ".js", ".json", ".jsx", ".kt", ".log",
-  ".md", ".odf", ".ods", ".odt", ".php", ".pptm", ".pptx", ".ps1",
+  ".md", ".msg", ".odf", ".ods", ".odt", ".php", ".pptm", ".pptx", ".ps1",
   ".py", ".rb", ".rs", ".rst", ".rtf", ".scala", ".sh", ".sql",
-  ".swift", ".tex", ".toml", ".ts", ".tsx", ".txt", ".xlsm", ".xlsx",
+  ".swift", ".tex", ".toml", ".ts", ".tsx", ".txt", ".xls", ".xlsm", ".xlsx",
   ".xml", ".yaml", ".yml",
 ]);
 const ARCHIVE_MIMES = new Set([
@@ -746,14 +746,18 @@ const ARCHIVE_MIMES = new Set([
   "application/zip",
 ]);
 const DOCUMENT_MIMES = new Set([
+  "application/epub+zip",
   "application/json",
   "application/rtf",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-outlook",
   "application/vnd.ms-excel.sheet.macroenabled.12",
   "application/vnd.ms-powerpoint.presentation.macroenabled.12",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/xml",
+  "message/rfc822",
 ]);
 
 function ModalShell({ title, onClose, children, wide }: {

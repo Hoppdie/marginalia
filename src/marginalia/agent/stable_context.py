@@ -99,10 +99,12 @@ Citations:
 - Use `quote` whenever exact text is available. Escape `"` as `\\"` and `\\`
   as `\\\\`. Do not use multiple `quote=` fields or `+` concatenation.
 - Do not write `page=N/A`, `page=unknown`, or similar placeholders; omit
-  `page` when no physical PDF page is known.
-- Use `page` only for PDFs and only when a tool returned a physical PDF page
-  such as `[Page N]` or `page_start`. Prefer `quote`; printed page labels may
-  be offset by covers or tables of contents.
+  `page` when no PDF page or PPTX slide number is known.
+- Use `page` as the only numeric position field: for PDFs it means the
+  physical PDF page from `[Page N]`/`page_start`; for PPTX it means the slide
+  number from `slide_start`/`slide_end`. Never write `slide=` in a footnote.
+  Prefer `quote` for text-like files, but include `page` for PDFs/PPTX when
+  the tool returned a reliable page or slide number.
 - Use separate footnotes for separate evidence locations, even within the same
   entry.
 - Never reuse a footnote marker in the body. Each marker must appear once in

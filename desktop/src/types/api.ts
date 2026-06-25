@@ -415,3 +415,14 @@ export interface LlmSettings {
     api_key_set: boolean;
   };
 }
+
+export interface FilePreviewText {
+  entry_id: string;
+  file_id: string;
+  display_name: string;
+  pipeline: string;
+  text: string;
+  total_chars: number;
+  returned_chars: number;
+  truncated: boolean;
+}

@@ -128,6 +128,12 @@ def _check_regex():
             f'[^n]: entry_id={eid}, quote="abc", page=N/A - r',
             ("n", eid, "abc", None, None, "r"),
         ),
+        # Legacy PPTX footnotes sometimes used slide=N. The public locator
+        # field is page=N, so parse slide as a page-compatible alias.
+        (
+            f'[^sl]: entry_id={eid}, quote="abc", slide=6 - r',
+            ("sl", eid, "abc", "6", None, "r"),
+        ),
         # LLM occasionally writes `reason=` as another field instead of the
         # strict trailing `- reason`; tolerate it so raw entry_id metadata
         # does not leak into rendered footnotes.
@@ -486,6 +492,27 @@ async def _check_rewrite():
         )
         expected_q = urllib.parse.quote_plus("slide bullet")
         assert f"[my-doc.md](entry:{eid}?q={expected_q})" in out, out
+
+        # 21. pptx page-only citations fall back to slide number.
+        out = await rt._rewrite_footnotes_for_display(
+            f"body[^a]\n\n[^a]: entry_id={eid}, page=2 - r",
+        )
+        assert f"[my-doc.md](entry:{eid}?page=2)" in out, out
+
+        # 22. pptx with quote + page still uses the numeric slide locator;
+        # quote search is only a fallback when the page/slide is absent.
+        out = await rt._rewrite_footnotes_for_display(
+            f'body[^a]\n\n[^a]: entry_id={eid}, quote="slide bullet", page=6 - r',
+        )
+        assert f"[my-doc.md](entry:{eid}?page=6)" in out, out
+        assert "?q=" not in out, out
+
+        # 23. Legacy slide= is accepted but normalized to ?page=N.
+        out = await rt._rewrite_footnotes_for_display(
+            f'body[^a]\n\n[^a]: entry_id={eid}, quote="slide bullet", slide=8 - r',
+        )
+        assert f"[my-doc.md](entry:{eid}?page=8)" in out, out
+        assert "slide=" not in out, out
 
     print("[3] _rewrite_footnotes_for_display: type-aware dispatcher routes quote/page/bare correctly")
 

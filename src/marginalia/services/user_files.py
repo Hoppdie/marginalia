@@ -18,11 +18,13 @@ All three operations refuse soft-deleted entries.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marginalia.db.models import File, FileEntry, Folder
+from marginalia.pipelines.registry import resolve_pipeline
 from marginalia.repositories import entries as entries_repo
 from marginalia.repositories import entry_tags as entry_tags_repo
 from marginalia.repositories import folders as folders_repo
@@ -40,6 +42,14 @@ class EntryNotFoundError(Exception):
     pass
 
 
+class EntryPreviewUnsupportedError(Exception):
+    pass
+
+
+class EntryPreviewError(Exception):
+    pass
+
+
 @dataclass(slots=True)
 class DownloadHandle:
     file_id: str
@@ -49,6 +59,18 @@ class DownloadHandle:
     size_bytes: int
     sha256: str | None
     stream: AsyncIterator[bytes]
+
+
+@dataclass(slots=True)
+class PreviewTextHandle:
+    entry_id: str
+    file_id: str
+    display_name: str
+    pipeline: str
+    text: str
+    total_chars: int
+    returned_chars: int
+    truncated: bool
 
 
 # ---- search ----------------------------------------------------------------
@@ -231,6 +253,56 @@ async def open_for_download(
     )
 
 
+async def open_extracted_text_preview(
+    session: AsyncSession,
+    *,
+    entry_id: str,
+    max_chars: int,
+    storage: StorageBackend | None = None,
+) -> PreviewTextHandle:
+    pair = await entries_repo.get_live_with_file(session, entry_id)
+    if pair is None:
+        raise EntryNotFoundError(entry_id)
+    entry, file_row = pair
+
+    pipeline = resolve_pipeline(
+        file_row.mime_type,
+        file_row.original_ext,
+        filename=entry.display_name,
+    )
+    if pipeline is None or pipeline.name not in {"email", "markitdown"}:
+        raise EntryPreviewUnsupportedError(entry_id)
+
+    storage = storage or get_storage()
+    preview_file = SimpleNamespace(
+        storage_key=file_row.storage_key,
+        original_ext=file_row.original_ext,
+        mime_type=file_row.mime_type,
+        description=file_row.description,
+        display_name=entry.display_name,
+    )
+    segment = await pipeline.read_segment(
+        file_row=preview_file,
+        args={"offset": 0, "max_chars": max_chars},
+        storage=storage,
+    )
+    if segment.error:
+        raise EntryPreviewError(segment.error)
+
+    total_chars = _coerce_int(segment.extras.get("total_chars"), len(segment.text))
+    returned_chars = len(segment.text)
+    return PreviewTextHandle(
+        entry_id=entry.id,
+        file_id=file_row.id,
+        display_name=entry.display_name,
+        pipeline=pipeline.name,
+        text=segment.text,
+        total_chars=total_chars,
+        returned_chars=returned_chars,
+        truncated=bool(segment.extras.get("truncated")) or returned_chars < total_chars,
+    )
+
+
 # ---- folder download (zip stream) -----------------------------------------
 
 class FolderNotFoundError(Exception):
@@ -305,6 +377,13 @@ async def _build_folder_path(
         parts.append(f.name)
         cur = f.parent_id
     return "/" + "/".join(reversed(parts))
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 async def get_entry_path(
